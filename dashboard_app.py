@@ -254,9 +254,9 @@ def inject_theme() -> None:
             --ink: #16202a;
             --muted: #5f6b7a;
             --line: #d9dde7;
-            --blue: #0f7a4b;
-            --orange: #ff6f1f;
-            --green: #0f7a4b;
+            --blue: #4f6df5;
+            --orange: #ffb32c;
+            --green: #2fd3b1;
             --red: #e15759;
         }
         .stApp {
@@ -368,7 +368,7 @@ def inject_theme() -> None:
             width: 42px;
             height: 42px;
             border-radius: 50%;
-            background: linear-gradient(135deg, #0f7a4b, #ff6f1f);
+            background: linear-gradient(135deg, #4f6df5, #35c8e8);
             color: white;
             display: flex;
             align-items: center;
@@ -411,7 +411,7 @@ def inject_theme() -> None:
         }
         .status-high {
             background: rgba(15,122,75,0.12);
-            color: #0f7a4b;
+            color: #4f6df5;
         }
         .status-mid {
             background: rgba(255,111,31,0.12);
@@ -461,7 +461,7 @@ def inject_theme() -> None:
             border-radius: 999px;
             background: linear-gradient(90deg, rgba(15,122,75,0.12), rgba(255,111,31,0.12));
             border: 1px solid rgba(15,122,75,0.18);
-            color: #0f7a4b;
+            color: #4f6df5;
             font-size: 0.74rem;
             font-weight: 700;
             letter-spacing: 0.03em;
@@ -480,8 +480,8 @@ def inject_theme() -> None:
             background: #ffffff !important;
         }
         div[data-testid="stTextInput"] input:focus {
-            border-color: #0f7a4b !important;
-            box-shadow: 0 0 0 1px #0f7a4b !important;
+            border-color: #4f6df5 !important;
+            box-shadow: 0 0 0 1px #4f6df5 !important;
         }
         div[data-testid="stTextInput"] label p {
             font-size: 0.78rem !important;
@@ -495,13 +495,252 @@ def inject_theme() -> None:
             font-weight: 800 !important;
         }
         div[data-testid="stFormSubmitButton"] button {
-            background: linear-gradient(90deg, #0f7a4b, #ff6f1f) !important;
+            background: linear-gradient(90deg, #4f6df5, #35c8e8) !important;
             color: white !important;
             border: none !important;
+        }
+        :root {
+            --bg: #eef3fb;
+            --panel: #ffffff;
+            --ink: #161b2d;
+            --muted: #9aa4b8;
+            --line: #e9edf6;
+            --blue: #4f6df5;
+            --blue-deep: #2637c9;
+            --cyan: #35c8e8;
+            --mint: #2fd3b1;
+            --violet: #7b4cf3;
+            --pink: #f455a7;
+            --amber: #ffb32c;
+            --red: #ff4d6d;
+            --shadow: 0 18px 45px rgba(40, 51, 86, 0.10);
+            --soft-shadow: 0 8px 22px rgba(40, 51, 86, 0.08);
+        }
+        .stApp {
+            background:
+                radial-gradient(circle at 4% 0%, rgba(79, 109, 245, 0.16), transparent 25%),
+                radial-gradient(circle at 100% 5%, rgba(53, 200, 232, 0.13), transparent 22%),
+                linear-gradient(135deg, #f7f9fd 0%, #eef3fb 100%) !important;
+            color: var(--ink);
+        }
+        section[data-testid="stSidebar"] {
+            background: rgba(255, 255, 255, 0.86) !important;
+            border-right: 1px solid rgba(226, 232, 245, 0.9);
+            box-shadow: 16px 0 42px rgba(41, 56, 93, 0.06);
+        }
+        section[data-testid="stSidebar"] > div {
+            padding-top: 1.35rem;
+        }
+        section[data-testid="stSidebar"] h1,
+        section[data-testid="stSidebar"] h2,
+        section[data-testid="stSidebar"] h3 {
+            color: #24304f !important;
+            font-weight: 800 !important;
+        }
+        .block-container {
+            max-width: 1480px;
+            padding-top: 1.25rem !important;
+            padding-left: 2rem !important;
+            padding-right: 2rem !important;
+        }
+        .hero {
+            position: relative;
+            overflow: hidden;
+            background: rgba(255, 255, 255, 0.92) !important;
+            color: var(--ink) !important;
+            border: 1px solid rgba(231, 235, 247, 0.95);
+            border-radius: 24px !important;
+            padding: 1.45rem 1.65rem 1.35rem 1.65rem !important;
+            box-shadow: var(--shadow) !important;
+        }
+        .hero::before {
+            content: "";
+            position: absolute;
+            inset: auto -60px -85px auto;
+            width: 250px;
+            height: 250px;
+            border-radius: 50%;
+            background: radial-gradient(circle, rgba(79, 109, 245, 0.24), rgba(53, 200, 232, 0.08) 58%, transparent 70%);
+            pointer-events: none;
+        }
+        .hero::after {
+            content: "Dashboard";
+            position: absolute;
+            right: 1.45rem;
+            top: 1.15rem;
+            padding: 0.45rem 0.78rem;
+            border-radius: 999px;
+            background: linear-gradient(135deg, rgba(79,109,245,0.12), rgba(47,211,177,0.12));
+            color: #4f6df5;
+            font-size: 0.74rem;
+            font-weight: 800;
+        }
+        .hero h1 {
+            color: #151a2e !important;
+            font-size: 2rem !important;
+            letter-spacing: 0 !important;
+        }
+        .hero p {
+            max-width: 760px;
+            color: #8b95aa !important;
+            font-size: 0.95rem !important;
+        }
+        .kpi-card {
+            position: relative;
+            overflow: hidden;
+            border: 1px solid rgba(231, 235, 247, 0.95) !important;
+            border-radius: 18px !important;
+            background: rgba(255, 255, 255, 0.94) !important;
+            box-shadow: var(--soft-shadow) !important;
+            min-height: 112px !important;
+            padding: 1.08rem 1.1rem !important;
+        }
+        .kpi-card::before {
+            content: "";
+            display: block;
+            width: 38px;
+            height: 38px;
+            border-radius: 13px;
+            margin-bottom: 0.65rem;
+            background: linear-gradient(135deg, #4f6df5, #35c8e8);
+            box-shadow: 0 10px 22px rgba(79, 109, 245, 0.22);
+        }
+        .kpi-card::after {
+            content: "...";
+            position: absolute;
+            right: 1rem;
+            top: 0.75rem;
+            color: #b8bfd0;
+            font-weight: 800;
+            letter-spacing: 0.08em;
+        }
+        .kpi-label {
+            color: #a0a9bb !important;
+            font-size: 0.76rem !important;
+            font-weight: 700 !important;
+        }
+        .kpi-value {
+            color: #161b2d !important;
+            font-size: 1.58rem !important;
+            font-weight: 850 !important;
+        }
+        .kpi-sub {
+            color: #2fc39e !important;
+            font-size: 0.78rem !important;
+            font-weight: 750;
+        }
+        .insight-card,
+        div[data-testid="stMetric"],
+        div[data-testid="stDataFrame"],
+        div[data-testid="stTable"],
+        div[data-testid="stPlotlyChart"] {
+            border-radius: 20px !important;
+        }
+        .insight-card {
+            background: rgba(255,255,255,0.94) !important;
+            border: 1px solid rgba(231, 235, 247, 0.95) !important;
+            border-left: 0 !important;
+            box-shadow: var(--soft-shadow) !important;
+            color: #29324a;
+        }
+        div[data-testid="stMetric"] {
+            background: rgba(255,255,255,0.92);
+            border: 1px solid rgba(231, 235, 247, 0.95);
+            box-shadow: var(--soft-shadow);
+            padding: 1rem 1.05rem;
+        }
+        div[data-testid="stMetricLabel"] p {
+            color: #9aa4b8 !important;
+            font-size: 0.78rem !important;
+            font-weight: 750 !important;
+        }
+        div[data-testid="stMetricValue"] {
+            color: #161b2d !important;
+            font-weight: 850 !important;
+        }
+        div[data-testid="stDataFrame"],
+        div[data-testid="stPlotlyChart"] {
+            background: rgba(255,255,255,0.94);
+            border: 1px solid rgba(231, 235, 247, 0.95);
+            box-shadow: var(--soft-shadow);
+            padding: 0.55rem;
+        }
+        h1, h2, h3 {
+            color: #161b2d !important;
+            letter-spacing: 0 !important;
+        }
+        div[data-testid="stCaptionContainer"],
+        p, label {
+            color: #8f9aae;
+        }
+        .stTabs [data-baseweb="tab-list"] {
+            background: rgba(255,255,255,0.72);
+            border: 1px solid rgba(231, 235, 247, 0.92);
+            border-radius: 18px;
+            padding: 0.35rem;
+            box-shadow: var(--soft-shadow);
+        }
+        .stTabs [data-baseweb="tab"] {
+            border: 0 !important;
+            border-radius: 14px !important;
+            color: #9aa4b8;
+            background: transparent !important;
+            min-height: 2.45rem;
+        }
+        .stTabs [aria-selected="true"] {
+            color: #4f6df5 !important;
+            background: #ffffff !important;
+            box-shadow: 0 9px 22px rgba(79, 109, 245, 0.12) !important;
+        }
+        div[data-testid="stTextInput"] input,
+        div[data-testid="stDateInput"] input,
+        div[data-baseweb="select"] > div,
+        div[data-testid="stMultiSelect"] div[data-baseweb="select"] > div {
+            border-radius: 15px !important;
+            border: 1px solid rgba(226, 232, 245, 0.95) !important;
+            background: rgba(255,255,255,0.92) !important;
+            box-shadow: 0 5px 14px rgba(40, 51, 86, 0.04);
+        }
+        div[data-testid="stTextInput"] input:focus {
+            border-color: #4f6df5 !important;
+            box-shadow: 0 0 0 3px rgba(79, 109, 245, 0.12) !important;
+        }
+        div[data-testid="stFormSubmitButton"] button,
+        div[data-testid="stButton"] button,
+        div[data-testid="stDownloadButton"] button {
+            border-radius: 15px !important;
+            border: 1px solid rgba(226, 232, 245, 0.95) !important;
+            background: #ffffff !important;
+            color: #4f6df5 !important;
+            box-shadow: var(--soft-shadow);
+            min-height: 2.75rem !important;
+        }
+        div[data-testid="stFormSubmitButton"] button,
+        div[data-testid="stButton"] button[kind="primary"] {
+            background: linear-gradient(135deg, #4f6df5, #35c8e8) !important;
+            color: #ffffff !important;
+            border: 0 !important;
+        }
+        div[role="radiogroup"] {
+            gap: 0.35rem;
+        }
+        div[role="radiogroup"] label {
+            background: rgba(255,255,255,0.76);
+            border: 1px solid rgba(231, 235, 247, 0.95);
+            border-radius: 14px;
+            padding: 0.45rem 0.65rem;
+            margin-bottom: 0.25rem;
+        }
+        .js-plotly-plot .plotly .gridlayer path {
+            stroke: rgba(218, 225, 240, 0.72) !important;
         }
         @media (max-width: 900px) {
             .login-title {
                 font-size: 1.8rem;
+            }
+            .block-container {
+                padding-left: 1rem !important;
+                padding-right: 1rem !important;
             }
         }
         </style>
@@ -528,13 +767,14 @@ def style_figure(fig):
         template="plotly_white",
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
-        margin=dict(l=10, r=10, t=56, b=10),
+        margin=dict(l=12, r=12, t=56, b=12),
         legend_title_text="",
-        font=dict(size=13, color="#16202a"),
-        title=dict(font=dict(size=18, color="#16202a")),
+        font=dict(size=13, color="#2d3448", family="Inter, Pretendard, Arial, sans-serif"),
+        title=dict(font=dict(size=18, color="#161b2d")),
+        colorway=["#4f6df5", "#35c8e8", "#2fd3b1", "#7b4cf3", "#ffb32c", "#f455a7"],
     )
-    fig.update_xaxes(showgrid=True, gridcolor="rgba(217,221,231,0.65)", zeroline=False)
-    fig.update_yaxes(showgrid=True, gridcolor="rgba(217,221,231,0.65)", zeroline=False)
+    fig.update_xaxes(showgrid=True, gridcolor="rgba(218,225,240,0.75)", zeroline=False)
+    fig.update_yaxes(showgrid=True, gridcolor="rgba(218,225,240,0.75)", zeroline=False)
     return fig
 
 
@@ -1445,7 +1685,7 @@ def render_past_product_lookup(
                 d_df,
                 x="D-day",
                 y="발주수량",
-                color_discrete_sequence=["#1D4ED8"],
+                color_discrete_sequence=["#4f6df5"],
                 title="",
             )
             style_figure(fig_d)
@@ -1491,10 +1731,10 @@ def render_past_product_lookup(
 
         fig_c = go.Figure()
         fig_c.add_trace(
-            go.Bar(name="사전예약발주", x=center_merged["센터명"], y=center_merged["사전예약발주"], marker_color="#1D4ED8")
+            go.Bar(name="사전예약발주", x=center_merged["센터명"], y=center_merged["사전예약발주"], marker_color="#4f6df5")
         )
         fig_c.add_trace(
-            go.Bar(name="실수요량", x=center_merged["센터명"], y=center_merged["실수요량"], marker_color="#93C5FD")
+            go.Bar(name="실수요량", x=center_merged["센터명"], y=center_merged["실수요량"], marker_color="#35c8e8")
         )
         fig_c.add_trace(
             go.Bar(name="초도발주량", x=center_merged["센터명"], y=center_merged["초도발주량"], marker_color="#ff4d4f")
@@ -1763,7 +2003,7 @@ def render_past_simple_lookup(
                     st.markdown("**D-day별 사전예약 발주 수량 (전체 센터 합계)**")
                     fig_d = px.bar(
                         d_df, x="D-day", y="발주수량",
-                        color_discrete_sequence=["#1D4ED8"], height=220,
+                        color_discrete_sequence=["#4f6df5"], height=220,
                         labels={"발주수량": "수량"},
                     )
                     fig_d.update_layout(
@@ -1847,8 +2087,8 @@ def render_past_simple_lookup(
                 fig_c = go.Figure()
                 fig_c.add_trace(go.Bar(name="4일치 예약주문", x=c_merged["센터명"], y=c_merged["4일치 예약주문"], marker_color="#A7F3D0"))
                 fig_c.add_trace(go.Bar(name="10일치 예약주문", x=c_merged["센터명"], y=c_merged["10일치 예약주문"], marker_color="#34D399"))
-                fig_c.add_trace(go.Bar(name="초도발주량", x=c_merged["센터명"], y=c_merged["초도발주량"], marker_color="#93C5FD"))
-                fig_c.add_trace(go.Bar(name="실수요량(또는 실출고량)", x=c_merged["센터명"], y=c_merged["실수요량(또는 실출고량)"], marker_color="#1E3A8A"))
+                fig_c.add_trace(go.Bar(name="초도발주량", x=c_merged["센터명"], y=c_merged["초도발주량"], marker_color="#7b4cf3"))
+                fig_c.add_trace(go.Bar(name="실수요량(또는 실출고량)", x=c_merged["센터명"], y=c_merged["실수요량(또는 실출고량)"], marker_color="#35c8e8"))
                 fig_c.update_layout(
                     barmode="group", height=290,
                     margin=dict(l=0, r=0, t=20, b=80),
@@ -1951,7 +2191,7 @@ def render_past_simple_lookup(
             fig_bar = go.Figure()
             fig_bar.add_trace(go.Bar(name="초도발주량", x=cat_agg[agg_level], y=cat_agg["총 초도발주량"], marker_color="#BFDBFE"))
             fig_bar.add_trace(go.Bar(name="실출고량", x=cat_agg[agg_level], y=cat_agg["총 실출고량"], marker_color="#2563EB"))
-            fig_bar.add_trace(go.Bar(name="실수요", x=cat_agg[agg_level], y=cat_agg["총 실수요"], marker_color="#1E3A8A"))
+            fig_bar.add_trace(go.Bar(name="실수요", x=cat_agg[agg_level], y=cat_agg["총 실수요"], marker_color="#35c8e8"))
             fig_bar.update_layout(
                 barmode="group", height=340,
                 margin=dict(l=0, r=0, t=20, b=60),
@@ -2073,8 +2313,8 @@ def render_past_category_compare(preorder_df: pd.DataFrame, sales_df: pd.DataFra
     chart_source = category_summary.sort_values("초도발주량", ascending=False).head(20)
     fig = go.Figure()
     fig.add_trace(go.Bar(name="예약주문량", x=chart_source[category_label_col], y=chart_source["예약주문량"], marker_color="#34D399"))
-    fig.add_trace(go.Bar(name="초도발주량", x=chart_source[category_label_col], y=chart_source["초도발주량"], marker_color="#93C5FD"))
-    fig.add_trace(go.Bar(name="매출 기반 실수요량", x=chart_source[category_label_col], y=chart_source["실수요량"], marker_color="#1E3A8A"))
+    fig.add_trace(go.Bar(name="초도발주량", x=chart_source[category_label_col], y=chart_source["초도발주량"], marker_color="#7b4cf3"))
+    fig.add_trace(go.Bar(name="매출 기반 실수요량", x=chart_source[category_label_col], y=chart_source["실수요량"], marker_color="#35c8e8"))
     fig.update_layout(
         barmode="group",
         height=360,
@@ -2276,7 +2516,7 @@ st.markdown(
     """
     <div class="hero">
         <h1>신상품 센터 운영 대시보드</h1>
-        <p>예약 반응, 초도 발주, 실제 판매, 잔여 재고를 한 화면에서 겹쳐 보며 센터별 발주 적정성을 빠르게 판단할 수 있게 구성했습니다.</p>
+        <p>예약 반응, 초도 발주, 실제 판매, 잔여 재고를 카드형 분석 화면에서 빠르게 비교합니다.</p>
     </div>
     """,
     unsafe_allow_html=True,
@@ -2351,6 +2591,16 @@ if filtered_preorder.empty:
     st.stop()
 
 kpis = summarize_kpis(filtered_preorder, filtered_sales, filtered_stock)
+
+kpi_cols = st.columns(4)
+with kpi_cols[0]:
+    render_kpi_card("Product Revenue", format_won(kpis["누적 판매금액"]), "누적 판매금액")
+with kpi_cols[1]:
+    render_kpi_card("Initial Orders", format_int(kpis["초도 발주량"]), f"{format_int(kpis['상품 수'])}개 상품")
+with kpi_cols[2]:
+    render_kpi_card("Preorder Response", format_int(kpis["사전 예약량"]), f"{format_pct(kpis['예약/초도 비율'])}")
+with kpi_cols[3]:
+    render_kpi_card("Center Coverage", format_int(kpis["센터 수"]), f"평균 재고 {format_int(kpis['평균 재고'])}")
 
 item_summary = build_item_summary(filtered_preorder, filtered_sales)
 center_summary = build_center_summary(filtered_preorder, filtered_sales, filtered_stock)
@@ -2520,7 +2770,7 @@ else:
                 title="센터별 예약주문 비중",
                 labels={"CENTER_NM": "센터", "센터 비중(%)": "예약 비중(%)"},
                 color="센터 비중(%)",
-                color_continuous_scale=["#d7efe4", "#008061"],
+                color_continuous_scale=["#edf2ff", "#4f6df5"],
             )
             style_figure(fig)
             fig.update_traces(
@@ -2606,7 +2856,7 @@ else:
                 },
                 color_discrete_map={
                     "과다 가능": "#ff6b6b",
-                    "적정": "#0f7a4b",
+                    "적정": "#2fd3b1",
                     "부족 가능": "#4e79a7",
                 },
                 custom_data=["CENTER_NM", "RESERVATION_QTY", "INITIAL_ORD_QTY", "산식 초도예측량", "초도 차이"],
