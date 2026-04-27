@@ -1500,7 +1500,7 @@ def render_md_order_simulation_tab(
     display_ml = (ml_pivot / unit_divisor).round(0).astype(int)
     display_md = (st.session_state[state_key].reindex_like(current_pivot).fillna(0) / unit_divisor).round(0).astype(int)
 
-    editor_df = pd.DataFrame(index=display_ml.index)
+    editor_df = pd.DataFrame()
     editor_df["상품"] = [
         f"{idx + 1}. {name} [{item_code}]"
         for idx, (item_code, name) in enumerate(display_ml.index)
@@ -1568,18 +1568,19 @@ def render_md_order_simulation_tab(
     signal[ratio > 3.0] = "과발주↑"
     signal[(ratio < 0.5) & ratio.notna()] = "결품↑"
     signal.columns = [center_names.get(center_code, center_code) for center_code in signal.columns]
-    signal.insert(0, "상품", editor_df["상품"].values)
+    signal_df = signal.reset_index(drop=True)
+    signal_df.insert(0, "상품", editor_df["상품"].values)
 
     md_total = md_pivot.to_numpy().sum()
     diff_total = md_total - ml_pivot.to_numpy().sum()
     m1, m2, m3, m4 = st.columns(4)
     m1.metric(f"MD 입력 합 ({unit_choice})", format_int(md_total / unit_divisor))
     m2.metric("ML 대비 차이", format_int(diff_total / unit_divisor))
-    m3.metric("과발주 신호", f"{signal.astype(str).apply(lambda col: col.str.contains('과발주', regex=False)).sum().sum():,}")
-    m4.metric("결품 신호", f"{signal.astype(str).apply(lambda col: col.str.contains('결품', regex=False)).sum().sum():,}")
+    m3.metric("과발주 신호", f"{signal_df.astype(str).apply(lambda col: col.str.contains('과발주', regex=False)).sum().sum():,}")
+    m4.metric("결품 신호", f"{signal_df.astype(str).apply(lambda col: col.str.contains('결품', regex=False)).sum().sum():,}")
 
     st.markdown("#### 신호 (MD 입력 / ML 비율)")
-    st.dataframe(signal, use_container_width=True, height=360, hide_index=True)
+    st.dataframe(signal_df, use_container_width=True, height=360, hide_index=True)
 
 
 @st.cache_data(show_spinner=False)
