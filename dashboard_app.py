@@ -1485,14 +1485,21 @@ def render_md_order_simulation_tab(
     default_md = ml_pivot.copy()
     if st.session_state.get(signature_key) != signature:
         st.session_state[signature_key] = signature
-        st.session_state[state_key] = default_md
+        st.session_state[state_key] = default_md.copy()
         st.session_state[edit_key] = False
+    stored_md = st.session_state.get(state_key)
+    if (
+        not isinstance(stored_md, pd.DataFrame)
+        or not stored_md.index.equals(current_pivot.index)
+        or list(stored_md.columns) != list(current_pivot.columns)
+    ):
+        st.session_state[state_key] = default_md.copy()
 
     action_cols = st.columns([0.6, 0.6, 0.6, 3])
     if action_cols[0].button("편집", width="stretch", key="md_sim_edit_button"):
         st.session_state[edit_key] = True
     if action_cols[1].button("초기화", width="stretch", key="md_sim_reset_button"):
-        st.session_state[state_key] = default_md
+        st.session_state[state_key] = default_md.copy()
         st.session_state[edit_key] = False
         st.rerun()
     apply_clicked = action_cols[2].button("적용", width="stretch", key="md_sim_apply_button")
@@ -1541,14 +1548,15 @@ def render_md_order_simulation_tab(
 
     st.markdown(f"#### MD 입력 매트릭스 ({unit_choice})")
     st.caption("센터마다 모델 산출값(ML)은 잠금 열로 두고, MD 열만 편집합니다. 편집 버튼을 누른 뒤 수정하고 적용하면 신호 매트릭스가 갱신됩니다.")
+    is_editing = st.session_state.get(edit_key, False)
     edited_df = st.data_editor(
         editor_df,
         use_container_width=True,
         height=420,
         hide_index=True,
-        disabled=disabled_cols if st.session_state.get(edit_key, False) else list(editor_df.columns),
+        disabled=disabled_cols if is_editing else list(editor_df.columns),
         column_config=column_config,
-        key=f"md_sim_matrix_editor_{signature}",
+        key=f"md_sim_matrix_editor_{signature}_{'edit' if is_editing else 'view'}",
     )
 
     if apply_clicked:
@@ -1580,7 +1588,19 @@ def render_md_order_simulation_tab(
     m4.metric("결품 신호", f"{signal_df.astype(str).apply(lambda col: col.str.contains('결품', regex=False)).sum().sum():,}")
 
     st.markdown("#### 신호 (MD 입력 / ML 비율)")
-    st.dataframe(signal_df, use_container_width=True, height=360, hide_index=True)
+
+    def style_signal_cell(value):
+        text = str(value)
+        if text == "정상":
+            return "background-color:#DFF5E6; color:#256D3B; font-weight:700;"
+        if "결품" in text:
+            return "background-color:#FFE4E8; color:#B4233A; font-weight:700;"
+        if "과발주" in text:
+            return "background-color:#FFF0C7; color:#8A5A00; font-weight:700;"
+        return "background-color:#F3F6FB; color:#8A94A6;"
+
+    styled_signal = signal_df.style.map(style_signal_cell, subset=signal_df.columns[1:])
+    st.dataframe(styled_signal, use_container_width=True, height=360, hide_index=True)
 
 
 @st.cache_data(show_spinner=False)
