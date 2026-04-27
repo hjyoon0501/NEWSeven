@@ -1203,7 +1203,42 @@ def load_center_order() -> pd.DataFrame:
         df["CONV_QTY"] = clean_numeric(df["SUM(A.CONV_QTY)"]).fillna(0)
     else:
         df["CONV_QTY"] = 0
+    if "ORD_YMD" in df.columns:
+        df["ORD_DATE"] = pd.to_datetime(df["ORD_YMD"].astype(str), format="%Y%m%d", errors="coerce")
     return df
+
+
+def build_center_order_7d_summary(
+    preorder_df: pd.DataFrame,
+    center_order_df: pd.DataFrame,
+    group_cols: list[str],
+) -> pd.DataFrame:
+    if center_order_df.empty or "CONV_QTY" not in center_order_df.columns:
+        return pd.DataFrame(columns=group_cols + ["실출고량"])
+
+    release_lookup = (
+        preorder_df[["ITEM_CODE", "NP_RLSE_DATE"]]
+        .dropna(subset=["ITEM_CODE", "NP_RLSE_DATE"])
+        .drop_duplicates("ITEM_CODE")
+    )
+    scoped = center_order_df.merge(release_lookup, on="ITEM_CODE", how="left")
+    if "ORD_DATE" not in scoped.columns:
+        scoped["ORD_DATE"] = pd.to_datetime(scoped.get("ORD_YMD"), errors="coerce", format="%Y%m%d")
+
+    scoped = scoped[
+        scoped["ORD_DATE"].notna()
+        & scoped["NP_RLSE_DATE"].notna()
+        & scoped["ORD_DATE"].ge(scoped["NP_RLSE_DATE"])
+        & scoped["ORD_DATE"].lt(scoped["NP_RLSE_DATE"] + pd.Timedelta(days=7))
+    ].copy()
+    if scoped.empty:
+        return pd.DataFrame(columns=group_cols + ["실출고량"])
+
+    return (
+        scoped.groupby(group_cols, as_index=False)["CONV_QTY"]
+        .sum()
+        .rename(columns={"CONV_QTY": "실출고량"})
+    )
 
 
 @st.cache_data(show_spinner=False)
@@ -1453,11 +1488,7 @@ def build_past_reference_item_analysis(
     item_df["실수요량"] = item_df.get("실수요량", 0).fillna(0)
 
     if not center_order_df.empty:
-        shipped = (
-            center_order_df.groupby("ITEM_CODE", as_index=False)["CONV_QTY"]
-            .sum()
-            .rename(columns={"CONV_QTY": "실출고량"})
-        )
+        shipped = build_center_order_7d_summary(preorder_df, center_order_df, ["ITEM_CODE"])
         item_df = item_df.merge(shipped, on="ITEM_CODE", how="left")
     item_df["실출고량"] = item_df.get("실출고량", 0).fillna(0)
 
@@ -1702,12 +1733,9 @@ def render_past_product_lookup(
 
         center_ship = pd.DataFrame(columns=["센터코드", "실출고량"])
         if not center_order_df.empty:
-            center_ship = (
-                center_order_df[center_order_df["ITEM_CODE"].astype(str) == selected_item_code]
-                .groupby("CENTER_CODE", as_index=False)["CONV_QTY"]
-                .sum()
-                .rename(columns={"CENTER_CODE": "센터코드", "CONV_QTY": "실출고량"})
-            )
+            center_ship = build_center_order_7d_summary(item_pre, center_order_df, ["ITEM_CODE", "CENTER_CODE"])
+            center_ship = center_ship[center_ship["ITEM_CODE"].astype(str) == selected_item_code]
+            center_ship = center_ship.rename(columns={"CENTER_CODE": "센터코드"})[["센터코드", "실출고량"]]
             center_ship["센터코드"] = pd.to_numeric(center_ship["센터코드"], errors="coerce")
 
         center_sales = pd.DataFrame(columns=["센터명", "실수요량"])
@@ -1861,10 +1889,7 @@ def render_past_simple_lookup(
     ).reset_index()
 
     if not center_order_df.empty and "CONV_QTY" in center_order_df.columns:
-        item_orders = (
-            center_order_df.groupby("ITEM_CODE")["CONV_QTY"].sum()
-            .reset_index().rename(columns={"CONV_QTY": "실출고량"})
-        )
+        item_orders = build_center_order_7d_summary(preorder_df, center_order_df, ["ITEM_CODE"])
     else:
         item_orders = pd.DataFrame(columns=["ITEM_CODE", "실출고량"])
 
@@ -1918,12 +1943,12 @@ def render_past_simple_lookup(
     # ══ SECTION 1: Raw Data Explorer ══════════════════════════════════════════
     st.markdown("---")
     st.markdown("#### Raw Data Explorer")
-    st.markdown("##### 중/소분류별 초도발주량 · 실출고량 · 실수요")
+    st.markdown("##### 중/소분류별 초도발주량 · 실출고량(7일치) · 실수요")
 
     k1, k2, k3, k4 = st.columns(4)
     k1.metric("제품 수", f"{len(filtered):,} 종")
     k2.metric("총 초도발주량", f"{filtered['초도발주량'].sum():,.0f}")
-    k3.metric("총 실출고량", f"{filtered['실출고량'].sum():,.0f}")
+    k3.metric("총 실출고량(7일치)", f"{filtered['실출고량'].sum():,.0f}")
     k4.metric("총 실수요", f"{filtered['실수요'].sum():,.0f}")
 
     tbl = filtered[[
@@ -1935,6 +1960,7 @@ def render_past_simple_lookup(
     tbl = tbl.rename(columns={
         "ITEM_CODE": "제품코드", "ITEM_NM": "제품명", "BRAND": "브랜드",
         "ITEM_MDDV_NM": "중분류", "ITEM_SMDV_NM": "소분류",
+        "실출고량": "실출고량(7일치)", "실출고율(%)": "실출고율(7일치)(%)",
     })
     st.dataframe(
         tbl.set_index("제품코드"),
@@ -1943,9 +1969,9 @@ def render_past_simple_lookup(
         column_config={
             "초도발주량": st.column_config.NumberColumn(format="%,.0f"),
             "초기예약발주": st.column_config.NumberColumn(format="%,.0f"),
-            "실출고량": st.column_config.NumberColumn(format="%,.0f"),
+            "실출고량(7일치)": st.column_config.NumberColumn(format="%,.0f"),
             "실수요": st.column_config.NumberColumn(format="%,.0f"),
-            "실출고율(%)": st.column_config.NumberColumn(format="%.1f"),
+            "실출고율(7일치)(%)": st.column_config.NumberColumn(format="%.1f"),
         },
     )
     csv_bytes = tbl.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
@@ -2038,11 +2064,10 @@ def render_past_simple_lookup(
             center_pre["센터코드"] = center_pre["센터코드"].map(normalize_center_code)
 
             if not center_order_df.empty and "CONV_QTY" in center_order_df.columns:
-                c_orders = (
-                    center_order_df[center_order_df["ITEM_CODE"] == sel_code]
-                    .groupby("CENTER_CODE")["CONV_QTY"].sum()
-                    .reset_index().rename(columns={"CENTER_CODE": "센터코드", "CONV_QTY": "실출고량"})
-                )
+                item_pre_for_ship = item_pre[["ITEM_CODE", "NP_RLSE_DATE"]].drop_duplicates()
+                c_orders = build_center_order_7d_summary(item_pre_for_ship, center_order_df, ["ITEM_CODE", "CENTER_CODE"])
+                c_orders = c_orders[c_orders["ITEM_CODE"].astype(str) == str(sel_code)]
+                c_orders = c_orders.rename(columns={"CENTER_CODE": "센터코드"})[["센터코드", "실출고량"]]
                 c_orders["센터코드"] = c_orders["센터코드"].map(normalize_center_code)
             else:
                 c_orders = pd.DataFrame(columns=["센터코드", "실출고량"])
@@ -2059,25 +2084,25 @@ def render_past_simple_lookup(
             c_merged = center_pre.merge(c_orders, on="센터코드", how="left").merge(c_sales, on="센터명", how="left")
             c_merged["실출고량"] = c_merged["실출고량"].fillna(0)
             c_merged["실수요"] = c_merged["실수요"].fillna(0)
-            c_merged["실수요량(또는 실출고량)"] = np.where(
+            c_merged["실수요량(또는 실출고량(7일치))"] = np.where(
                 c_merged["실수요"] > 0,
                 c_merged["실수요"],
                 c_merged["실출고량"],
             )
             safe_init = c_merged["초도발주량"].replace(0, pd.NA)
-            c_merged["출고율(%)"] = (c_merged["실출고량"] / safe_init * 100).round(1)
+            c_merged["출고율(7일치)(%)"] = (c_merged["실출고량"] / safe_init * 100).round(1)
 
             st.dataframe(
-                c_merged.set_index("센터명")[["4일치 예약주문", "10일치 예약주문", "초도발주량", "실출고량", "출고율(%)", "실수요", "참여점포", "전체점포"]],
+                c_merged.set_index("센터명")[["4일치 예약주문", "10일치 예약주문", "초도발주량", "실출고량", "출고율(7일치)(%)", "실수요", "참여점포", "전체점포"]],
                 use_container_width=True,
                 height=300,
                 column_config={
                     "초도발주량": st.column_config.NumberColumn(format="%,.0f"),
                     "4일치 예약주문": st.column_config.NumberColumn(format="%,.0f"),
                     "10일치 예약주문": st.column_config.NumberColumn(format="%,.0f"),
-                    "실출고량": st.column_config.NumberColumn(format="%,.0f"),
+                    "실출고량": st.column_config.NumberColumn("실출고량(7일치)", format="%,.0f"),
                     "실수요": st.column_config.NumberColumn(format="%,.0f"),
-                    "출고율(%)": st.column_config.NumberColumn(format="%.1f"),
+                    "출고율(7일치)(%)": st.column_config.NumberColumn(format="%.1f"),
                     "참여점포": st.column_config.NumberColumn(format="%,.0f"),
                     "전체점포": st.column_config.NumberColumn(format="%,.0f"),
                 },
@@ -2088,7 +2113,7 @@ def render_past_simple_lookup(
                 fig_c.add_trace(go.Bar(name="4일치 예약주문", x=c_merged["센터명"], y=c_merged["4일치 예약주문"], marker_color="#A7F3D0"))
                 fig_c.add_trace(go.Bar(name="10일치 예약주문", x=c_merged["센터명"], y=c_merged["10일치 예약주문"], marker_color="#34D399"))
                 fig_c.add_trace(go.Bar(name="초도발주량", x=c_merged["센터명"], y=c_merged["초도발주량"], marker_color="#7b4cf3"))
-                fig_c.add_trace(go.Bar(name="실수요량(또는 실출고량)", x=c_merged["센터명"], y=c_merged["실수요량(또는 실출고량)"], marker_color="#35c8e8"))
+                fig_c.add_trace(go.Bar(name="실수요량(또는 실출고량(7일치))", x=c_merged["센터명"], y=c_merged["실수요량(또는 실출고량(7일치))"], marker_color="#35c8e8"))
                 fig_c.update_layout(
                     barmode="group", height=290,
                     margin=dict(l=0, r=0, t=20, b=80),
@@ -2115,7 +2140,7 @@ def render_past_simple_lookup(
         r3.metric("결핍 발생", f"{(filtered['상태'] == '결핍').sum():,} 종")
         r4.metric("부진 발생", f"{(filtered['상태'] == '부진').sum():,} 종")
         avg_exit_rt = filtered["실출고율(%)"].mean()
-        r5.metric("평균 출고율", f"{avg_exit_rt:.1f} %" if pd.notna(avg_exit_rt) else "-")
+        r5.metric("평균 출고율(7일치)", f"{avg_exit_rt:.1f} %" if pd.notna(avg_exit_rt) else "-")
 
         status_filter = st.radio("상태 필터", ["전체", "정상", "결핍", "부진"], horizontal=True, key="psl_status_filter")
         res_df = filtered.copy()
@@ -2130,6 +2155,7 @@ def render_past_simple_lookup(
             "ITEM_CODE": "제품코드", "ITEM_NM": "제품명", "BRAND": "브랜드",
             "ITEM_MDDV_NM": "중분류", "ITEM_SMDV_NM": "소분류",
             "결핍여부": "결핍", "부진여부": "부진",
+            "실출고량": "실출고량(7일치)", "실출고율(%)": "실출고율(7일치)(%)",
         }).copy()
         res_tbl["출시일자"] = res_tbl["출시일자"].dt.strftime("%Y-%m-%d")
         res_tbl["결핍"] = res_tbl["결핍"].map({True: "Y", False: "-"})
@@ -2142,9 +2168,9 @@ def render_past_simple_lookup(
             column_config={
                 "초도발주량": st.column_config.NumberColumn(format="%,.0f"),
                 "초기예약발주": st.column_config.NumberColumn(format="%,.0f"),
-                "실출고량": st.column_config.NumberColumn(format="%,.0f"),
+                "실출고량(7일치)": st.column_config.NumberColumn(format="%,.0f"),
                 "실수요": st.column_config.NumberColumn(format="%,.0f"),
-                "실출고율(%)": st.column_config.NumberColumn(format="%.1f"),
+                "실출고율(7일치)(%)": st.column_config.NumberColumn(format="%.1f"),
             },
         )
         res_csv = res_tbl.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
@@ -2165,9 +2191,9 @@ def render_past_simple_lookup(
             결핍상품수=("결핍여부", "sum"),
             부진상품수=("부진여부", "sum"),
         ).reset_index()
-        cat_agg.columns = [agg_level, "상품수", "총 초도발주량", "총 초기예약발주", "총 실출고량", "총 실수요", "결핍 상품수", "부진 상품수"]
+        cat_agg.columns = [agg_level, "상품수", "총 초도발주량", "총 초기예약발주", "총 실출고량(7일치)", "총 실수요", "결핍 상품수", "부진 상품수"]
         safe_tot = cat_agg["총 초도발주량"].replace(0, pd.NA)
-        cat_agg["평균 출고율(%)"] = (cat_agg["총 실출고량"] / safe_tot * 100).round(1)
+        cat_agg["평균 출고율(7일치)(%)"] = (cat_agg["총 실출고량(7일치)"] / safe_tot * 100).round(1)
 
         st.dataframe(
             cat_agg.set_index(agg_level),
@@ -2176,9 +2202,9 @@ def render_past_simple_lookup(
             column_config={
                 "총 초도발주량": st.column_config.NumberColumn(format="%,.0f"),
                 "총 초기예약발주": st.column_config.NumberColumn(format="%,.0f"),
-                "총 실출고량": st.column_config.NumberColumn(format="%,.0f"),
+                "총 실출고량(7일치)": st.column_config.NumberColumn(format="%,.0f"),
                 "총 실수요": st.column_config.NumberColumn(format="%,.0f"),
-                "평균 출고율(%)": st.column_config.NumberColumn(format="%.1f"),
+                "평균 출고율(7일치)(%)": st.column_config.NumberColumn(format="%.1f"),
             },
         )
         cat_csv = cat_agg.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
@@ -2187,10 +2213,10 @@ def render_past_simple_lookup(
         ch1, ch2 = st.columns(2, gap="large")
 
         with ch1:
-            st.markdown(f"**{agg_level}별 초도발주량 / 실출고량 / 실수요**")
+            st.markdown(f"**{agg_level}별 초도발주량 / 실출고량(7일치) / 실수요**")
             fig_bar = go.Figure()
             fig_bar.add_trace(go.Bar(name="초도발주량", x=cat_agg[agg_level], y=cat_agg["총 초도발주량"], marker_color="#BFDBFE"))
-            fig_bar.add_trace(go.Bar(name="실출고량", x=cat_agg[agg_level], y=cat_agg["총 실출고량"], marker_color="#2563EB"))
+            fig_bar.add_trace(go.Bar(name="실출고량(7일치)", x=cat_agg[agg_level], y=cat_agg["총 실출고량(7일치)"], marker_color="#2563EB"))
             fig_bar.add_trace(go.Bar(name="실수요", x=cat_agg[agg_level], y=cat_agg["총 실수요"], marker_color="#35c8e8"))
             fig_bar.update_layout(
                 barmode="group", height=340,
