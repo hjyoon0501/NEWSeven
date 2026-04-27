@@ -2512,30 +2512,26 @@ else:
 
     with right:
         if center_options:
-            fig = px.pie(
+            fig = px.bar(
                 center_share,
-                names="CENTER_NM",
-                values="RESERVATION_QTY",
+                x="CENTER_NM",
+                y="센터 비중(%)",
                 custom_data=["CENTER_NM", "RESERVATION_QTY", "ORDERING_STORE_CNT"],
                 title="센터별 예약주문 비중",
-                hole=0.48,
-                color_discrete_sequence=TABLEAU_COLORS,
+                labels={"CENTER_NM": "센터", "센터 비중(%)": "예약 비중(%)"},
+                color="센터 비중(%)",
+                color_continuous_scale=["#d7efe4", "#008061"],
             )
             style_figure(fig)
             fig.update_traces(
                 hovertemplate=(
                     "센터=%{customdata[0]}<br>"
-                    "예약 비중=%{percent}<br>"
+                    "예약 비중=%{y:.1f}%<br>"
                     "예약 수량=%{customdata[1]:,.0f}<br>"
                     "예약 점포 수=%{customdata[2]:,.0f}<extra></extra>"
-                ),
-                textinfo="percent",
-                pull=[
-                    0.06 if center_name == st.session_state.get(center_key, default_center) else 0
-                    for center_name in center_share["CENTER_NM"]
-                ],
+                )
             )
-            fig.update_layout(showlegend=True)
+            fig.update_layout(coloraxis_showscale=False)
             center_select_event = st.plotly_chart(
                 fig,
                 use_container_width=True,
@@ -2546,10 +2542,7 @@ else:
 
             selected_points = center_select_event.selection.points if center_select_event else []
             if selected_points:
-                clicked_center_name = (
-                    selected_points[0].get("label")
-                    or selected_points[0].get("customdata", [None])[0]
-                )
+                clicked_center_name = selected_points[0].get("x")
                 if clicked_center_name in center_options:
                     st.session_state[center_key] = clicked_center_name
         else:
