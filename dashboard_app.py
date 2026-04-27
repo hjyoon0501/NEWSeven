@@ -2309,63 +2309,94 @@ def render_past_simple_lookup(
             fig_s.update_yaxes(gridcolor="#F1F5F9")
             st.plotly_chart(fig_s, use_container_width=True)
 
-        st.markdown("**상품별 초도발주량 vs 실출고량(7일치) (상품별 분포)**")
+        st.markdown("**상품별 OPTIMAL(OUTFLOW_7D) vs MD 실제 초도발주량 (로그 스케일)**")
         scatter_df = filtered.copy()
         scatter_df["출시일자_str"] = scatter_df["출시일자"].dt.strftime("%Y-%m-%d")
-        fig_sc = px.scatter(
-            scatter_df,
-            x="초도발주량", y="실출고량",
-            color="상태",
-            category_orders={"상태": OUTFLOW_STATUS_ORDER},
-            color_discrete_map=OUTFLOW_STATUS_COLORS,
-            hover_data={
-                "ITEM_NM": True, "출시일자_str": True,
-                "ITEM_MDDV_NM": True, "ITEM_SMDV_NM": True,
-                "초도발주량": ":,.0f", "실출고량": ":,.0f", "실출고율(%)": ":.1f", "상태": True,
-            },
-            labels={
-                "ITEM_NM": "제품명", "출시일자_str": "출시일자",
-                "ITEM_MDDV_NM": "중분류", "ITEM_SMDV_NM": "소분류",
-                "실출고량": "실출고량(7일치)",
-            },
-            height=420,
-        )
-        max_val = max(
-            scatter_df["초도발주량"].max() if not scatter_df.empty else 1,
-            scatter_df["실출고량"].max() if not scatter_df.empty else 1,
-        )
-        for label, ratio in [
-            ("0.333 부진재고/과발주 위험", OUTFLOW_STATUS_BOUNDS["slow_stock"]),
-            ("0.5 과발주 위험/정상", OUTFLOW_STATUS_BOUNDS["over_order_risk"]),
-            ("0.778 정상/결품 위험", OUTFLOW_STATUS_BOUNDS["normal"]),
-            ("1.0 결품 기준", OUTFLOW_STATUS_BOUNDS["shortage_risk"]),
-        ]:
-            fig_sc.add_trace(
-                go.Scatter(
-                    x=[0, max_val],
-                    y=[0, max_val * ratio],
-                    mode="lines",
-                    line=dict(color="#9BA6BD", dash="dash", width=1),
-                    name=label,
-                    hoverinfo="skip",
-                )
+        scatter_df = scatter_df[(scatter_df["초도발주량"] > 0) & (scatter_df["실출고량"] > 0)].copy()
+        if scatter_df.empty:
+            st.info("로그 스케일 그래프를 그릴 양수 데이터가 없습니다.")
+        else:
+            scatter_df["MD/OPTIMAL 배수"] = scatter_df["초도발주량"] / scatter_df["실출고량"]
+            fig_sc = px.scatter(
+                scatter_df,
+                x="실출고량", y="초도발주량",
+                color="상태",
+                category_orders={"상태": OUTFLOW_STATUS_ORDER},
+                color_discrete_map=OUTFLOW_STATUS_COLORS,
+                hover_data={
+                    "ITEM_NM": True, "출시일자_str": True,
+                    "ITEM_MDDV_NM": True, "ITEM_SMDV_NM": True,
+                    "실출고량": ":,.0f", "초도발주량": ":,.0f", "MD/OPTIMAL 배수": ":.2f", "실출고율(%)": ":.1f", "상태": True,
+                },
+                labels={
+                    "ITEM_NM": "제품명", "출시일자_str": "출시일자",
+                    "ITEM_MDDV_NM": "중분류", "ITEM_SMDV_NM": "소분류",
+                    "실출고량": "OPTIMAL = OUTFLOW_7D (log)",
+                    "초도발주량": "MD 실제 초도발주량 (log)",
+                },
+                height=420,
             )
-        fig_sc.update_layout(
-            margin=dict(l=0, r=0, t=20, b=20),
-            plot_bgcolor="white", paper_bgcolor="white",
-            font_size=11,
-        )
-        fig_sc.update_xaxes(gridcolor="#F1F5F9", tickformat=",")
-        fig_sc.update_yaxes(gridcolor="#F1F5F9", tickformat=",")
-        st.plotly_chart(fig_sc, use_container_width=True)
-        st.markdown(
-            "<span style='font-size:0.72rem;color:#94A3B8;'>"
-            "출고율 = 실출고량(7일치) / 초도발주량. "
-            "0.333 미만: 부진재고, 0.333~0.5: 과발주 위험, 0.5~0.778: 정상, "
-            "0.778~1.0: 결품 위험, 1.0 이상: 결품"
-            "</span>",
-            unsafe_allow_html=True,
-        )
+            min_axis = max(1, min(scatter_df["실출고량"].min(), scatter_df["초도발주량"].min()))
+            max_axis = max(scatter_df["실출고량"].max(), scatter_df["초도발주량"].max())
+            line_x = np.geomspace(min_axis, max_axis, 80)
+            for label, multiplier, dash, color in [
+                ("y=x (이상)", 1.0, "dash", "#2D3748"),
+                ("MD = 2 x OPTIMAL (과발주)", 2.0, "dot", "#9BA6BD"),
+                ("MD = 0.5 x OPTIMAL (결품)", 0.5, "dot", "#9BA6BD"),
+            ]:
+                fig_sc.add_trace(
+                    go.Scatter(
+                        x=line_x,
+                        y=line_x * multiplier,
+                        mode="lines",
+                        line=dict(color=color, dash=dash, width=1.4),
+                        name=label,
+                        hoverinfo="skip",
+                    )
+                )
+            fig_sc.update_layout(
+                margin=dict(l=0, r=0, t=20, b=20),
+                plot_bgcolor="white", paper_bgcolor="white",
+                font_size=11,
+                annotations=[
+                    dict(
+                        x=0.08,
+                        y=0.92,
+                        xref="paper",
+                        yref="paper",
+                        text="과발주 영역<br>(MD > OPTIMAL)",
+                        showarrow=False,
+                        align="left",
+                        bgcolor="rgba(255,255,255,0.78)",
+                        bordercolor="#94A3B8",
+                        borderwidth=1,
+                        font=dict(color="#475569", size=11),
+                    ),
+                    dict(
+                        x=0.92,
+                        y=0.08,
+                        xref="paper",
+                        yref="paper",
+                        text="결품 영역<br>(MD < OPTIMAL)",
+                        showarrow=False,
+                        align="right",
+                        bgcolor="rgba(255,255,255,0.78)",
+                        bordercolor="#EF4444",
+                        borderwidth=1,
+                        font=dict(color="#DC2626", size=11),
+                    ),
+                ],
+            )
+            fig_sc.update_xaxes(type="log", gridcolor="#F1F5F9", tickformat=",")
+            fig_sc.update_yaxes(type="log", gridcolor="#F1F5F9", tickformat=",")
+            st.plotly_chart(fig_sc, use_container_width=True)
+            st.markdown(
+                "<span style='font-size:0.72rem;color:#94A3B8;'>"
+                "X축은 OPTIMAL = OUTFLOW_7D, Y축은 MD 실제 초도발주량입니다. "
+                "y=x는 이상선, y=2x는 과발주 기준, y=0.5x는 결품 기준입니다."
+                "</span>",
+                unsafe_allow_html=True,
+            )
 
 
 def render_past_category_compare(preorder_df: pd.DataFrame, sales_df: pd.DataFrame, base_date: pd.Timestamp) -> None:
