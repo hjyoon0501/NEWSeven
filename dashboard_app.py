@@ -2229,28 +2229,29 @@ def render_past_simple_lookup(
             fig_s.update_yaxes(gridcolor="#F1F5F9")
             st.plotly_chart(fig_s, use_container_width=True)
 
-        st.markdown("**상품별 초도발주량 vs 실수요 (상품별 분포)**")
+        st.markdown("**상품별 초도발주량 vs 실출고량(7일치) (상품별 분포)**")
         scatter_df = filtered.copy()
         scatter_df["출시일자_str"] = scatter_df["출시일자"].dt.strftime("%Y-%m-%d")
         fig_sc = px.scatter(
             scatter_df,
-            x="초도발주량", y="실수요",
+            x="초도발주량", y="실출고량",
             color="상태",
             color_discrete_map={"정상": "#16A34A", "결핍": "#DC2626", "부진": "#D97706"},
             hover_data={
                 "ITEM_NM": True, "출시일자_str": True,
                 "ITEM_MDDV_NM": True, "ITEM_SMDV_NM": True,
-                "초도발주량": ":,.0f", "실수요": ":,.0f", "상태": True,
+                "초도발주량": ":,.0f", "실출고량": ":,.0f", "상태": True,
             },
             labels={
                 "ITEM_NM": "제품명", "출시일자_str": "출시일자",
                 "ITEM_MDDV_NM": "중분류", "ITEM_SMDV_NM": "소분류",
+                "실출고량": "실출고량(7일치)",
             },
             height=420,
         )
         max_val = max(
             scatter_df["초도발주량"].max() if not scatter_df.empty else 1,
-            scatter_df["실수요"].max() if not scatter_df.empty else 1,
+            scatter_df["실출고량"].max() if not scatter_df.empty else 1,
         )
         fig_sc.add_trace(go.Scatter(
             x=[0, max_val], y=[0, max_val],
@@ -2268,8 +2269,8 @@ def render_past_simple_lookup(
         st.plotly_chart(fig_sc, use_container_width=True)
         st.markdown(
             "<span style='font-size:0.72rem;color:#94A3B8;'>"
-            "기준선(점선) 위: 실수요 > 초도발주량 (결핍 우려 구간) &nbsp;|&nbsp; "
-            "기준선 아래: 초도발주량 > 실수요 (부진·잉재고 구간)"
+            "기준선(점선) 위: 실출고량(7일치) > 초도발주량 &nbsp;|&nbsp; "
+            "기준선 아래: 초도발주량 > 실출고량(7일치)"
             "</span>",
             unsafe_allow_html=True,
         )
