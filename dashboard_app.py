@@ -2871,19 +2871,17 @@ def render_past_dashboard_page(
 ) -> None:
     st.markdown("## 과거 신상품 조회")
     tabs = st.tabs(
-        ["제품별 데이터", "과거 Raw Data", "MD 발주 시뮬레이션", "과거 신상품 조회", "카테고리", "기준일 신상품"]
+        ["제품별 데이터", "과거 Raw Data", "과거 신상품 조회", "카테고리", "기준일 신상품"]
     )
     with tabs[0]:
         render_past_product_data_tab(preorder_df, sales_df, base_date)
     with tabs[1]:
         render_past_raw_data_tab(preorder_df, sales_df, center_order_df, stock_df, base_date)
     with tabs[2]:
-        render_md_order_simulation_tab(preorder_df, predictions_df)
-    with tabs[3]:
         render_past_simple_lookup(preorder_df, center_order_df, sales_df, predictions_df)
-    with tabs[4]:
+    with tabs[3]:
         render_past_category_compare(preorder_df, sales_df, base_date)
-    with tabs[5]:
+    with tabs[4]:
         render_past_current_release_focus(preorder_df, base_date)
 
 
@@ -2954,7 +2952,7 @@ with topbar_right:
         st.session_state.pop("login_user", None)
         st.rerun()
 
-page_options = ["금주 신상품", "과거 신상품 조회"]
+page_options = ["금주 신상품", "과거 신상품 조회", "MD 발주 시뮬레이션"]
 with st.sidebar:
     st.header("메뉴")
     selected_page = st.radio(
@@ -3004,6 +3002,22 @@ if selected_page == "과거 신상품 조회":
         full_predictions_df,
         past_base_date,
     )
+    st.stop()
+
+if selected_page == "MD 발주 시뮬레이션":
+    with st.sidebar:
+        st.header("파일 연결 상태")
+        status_items = [
+            ("예약주문 Raw", not full_preorder_df.empty),
+            ("OUTFLOW_7D 예측", not full_predictions_df.empty),
+        ]
+        for label, connected in status_items:
+            if connected:
+                st.success(f"{label}: 연결됨")
+            else:
+                st.warning(f"{label}: 없음")
+
+    render_md_order_simulation_tab(full_preorder_df, full_predictions_df)
     st.stop()
 
 st.markdown(
