@@ -1259,6 +1259,11 @@ def load_predictions() -> pd.DataFrame:
         "center_code": "CENTER_CODE",
         "OUTFLOW_7D": "OUTFLOW_7D",
         "outflow_7d": "OUTFLOW_7D",
+        "INITIAL_ORD_QTY": "INITIAL_ORD_QTY",
+        "Initial_ord_qty": "INITIAL_ORD_QTY",
+        "initial_ord_qty": "INITIAL_ORD_QTY",
+        "initial_order_qty": "INITIAL_ORD_QTY",
+        "초도발주량": "INITIAL_ORD_QTY",
     }
     df = df.rename(columns={col: rename_map.get(col, col) for col in df.columns})
     if "OUTFLOW_7D" not in df.columns:
@@ -1268,6 +1273,8 @@ def load_predictions() -> pd.DataFrame:
     if "CENTER_CODE" in df.columns:
         df["CENTER_CODE"] = df["CENTER_CODE"].map(normalize_center_code)
     df["OUTFLOW_7D"] = clean_numeric(df["OUTFLOW_7D"]).fillna(0)
+    if "INITIAL_ORD_QTY" in df.columns:
+        df["INITIAL_ORD_QTY"] = clean_numeric(df["INITIAL_ORD_QTY"]).fillna(0)
     return df
 
 
@@ -1290,6 +1297,56 @@ def build_outflow_7d_summary(
         .sum()
         .rename(columns={"OUTFLOW_7D": "실출고량"})
     )
+
+
+def build_prediction_initial_outflow_scatter(
+    predictions_df: pd.DataFrame,
+    preorder_df: pd.DataFrame,
+    item_codes: list[str],
+    selected_center: str,
+) -> pd.DataFrame:
+    required_cols = {"ITEM_CODE", "OUTFLOW_7D", "INITIAL_ORD_QTY"}
+    if predictions_df.empty or not required_cols.issubset(predictions_df.columns):
+        return pd.DataFrame()
+
+    scoped = predictions_df.copy()
+    if item_codes:
+        scoped = scoped[scoped["ITEM_CODE"].astype(str).isin([str(code) for code in item_codes])]
+
+    if selected_center != "전체" and "CENTER_CODE" in scoped.columns:
+        center_codes = (
+            preorder_df[preorder_df["CENTER_NM"].astype(str) == selected_center]["CENTER_CODE"]
+            .map(normalize_center_code)
+            .dropna()
+            .unique()
+            .tolist()
+        )
+        if center_codes:
+            scoped = scoped[scoped["CENTER_CODE"].isin(center_codes)]
+
+    if scoped.empty:
+        return pd.DataFrame()
+
+    scatter_df = (
+        scoped.groupby("ITEM_CODE", as_index=False)
+        .agg(
+            OUTFLOW_7D=("OUTFLOW_7D", "sum"),
+            INITIAL_ORD_QTY=("INITIAL_ORD_QTY", "sum"),
+        )
+    )
+    item_meta = (
+        preorder_df[
+            ["ITEM_CODE", "ITEM_NM", "BRAND", "ITEM_MDDV_NM", "ITEM_SMDV_NM", "NP_RLSE_DATE"]
+        ]
+        .drop_duplicates("ITEM_CODE")
+    )
+    scatter_df = scatter_df.merge(item_meta, on="ITEM_CODE", how="left")
+    safe_initial = scatter_df["INITIAL_ORD_QTY"].replace(0, pd.NA)
+    scatter_df["실출고율(%)"] = (scatter_df["OUTFLOW_7D"] / safe_initial * 100).round(1)
+    scatter_df["출고율"] = scatter_df["OUTFLOW_7D"] / safe_initial
+    scatter_df["상태"] = classify_outflow_status(scatter_df["출고율"])
+    scatter_df["MD/OPTIMAL 배수"] = scatter_df["INITIAL_ORD_QTY"] / scatter_df["OUTFLOW_7D"].replace(0, pd.NA)
+    return scatter_df
 
 
 @st.cache_data(show_spinner=False)
@@ -2310,34 +2367,43 @@ def render_past_simple_lookup(
             st.plotly_chart(fig_s, use_container_width=True)
 
         st.markdown("**상품별 OPTIMAL(OUTFLOW_7D) vs MD 실제 초도발주량 (로그 스케일)**")
-        scatter_df = filtered.copy()
-        scatter_df["출시일자_str"] = scatter_df["출시일자"].dt.strftime("%Y-%m-%d")
-        scatter_df = scatter_df[(scatter_df["초도발주량"] > 0) & (scatter_df["실출고량"] > 0)].copy()
+        scatter_df = build_prediction_initial_outflow_scatter(
+            predictions_df,
+            preorder_df,
+            filtered["ITEM_CODE"].astype(str).unique().tolist(),
+            selected_center,
+        )
+        if not scatter_df.empty:
+            scatter_df["출시일자_str"] = pd.to_datetime(
+                scatter_df["NP_RLSE_DATE"], errors="coerce"
+            ).dt.strftime("%Y-%m-%d")
+            scatter_df = scatter_df[
+                (scatter_df["INITIAL_ORD_QTY"] > 0) & (scatter_df["OUTFLOW_7D"] > 0)
+            ].copy()
         if scatter_df.empty:
             st.info("로그 스케일 그래프를 그릴 양수 데이터가 없습니다.")
         else:
-            scatter_df["MD/OPTIMAL 배수"] = scatter_df["초도발주량"] / scatter_df["실출고량"]
             fig_sc = px.scatter(
                 scatter_df,
-                x="실출고량", y="초도발주량",
+                x="OUTFLOW_7D", y="INITIAL_ORD_QTY",
                 color="상태",
                 category_orders={"상태": OUTFLOW_STATUS_ORDER},
                 color_discrete_map=OUTFLOW_STATUS_COLORS,
                 hover_data={
                     "ITEM_NM": True, "출시일자_str": True,
                     "ITEM_MDDV_NM": True, "ITEM_SMDV_NM": True,
-                    "실출고량": ":,.0f", "초도발주량": ":,.0f", "MD/OPTIMAL 배수": ":.2f", "실출고율(%)": ":.1f", "상태": True,
+                    "OUTFLOW_7D": ":,.0f", "INITIAL_ORD_QTY": ":,.0f", "MD/OPTIMAL 배수": ":.2f", "실출고율(%)": ":.1f", "상태": True,
                 },
                 labels={
                     "ITEM_NM": "제품명", "출시일자_str": "출시일자",
                     "ITEM_MDDV_NM": "중분류", "ITEM_SMDV_NM": "소분류",
-                    "실출고량": "OPTIMAL = OUTFLOW_7D (log)",
-                    "초도발주량": "MD 실제 초도발주량 (log)",
+                    "OUTFLOW_7D": "OPTIMAL = OUTFLOW_7D (log)",
+                    "INITIAL_ORD_QTY": "MD 실제 초도발주량 = INITIAL_ORD_QTY (log)",
                 },
                 height=420,
             )
-            min_axis = max(1, min(scatter_df["실출고량"].min(), scatter_df["초도발주량"].min()))
-            max_axis = max(scatter_df["실출고량"].max(), scatter_df["초도발주량"].max())
+            min_axis = max(1, min(scatter_df["OUTFLOW_7D"].min(), scatter_df["INITIAL_ORD_QTY"].min()))
+            max_axis = max(scatter_df["OUTFLOW_7D"].max(), scatter_df["INITIAL_ORD_QTY"].max())
             line_x = np.geomspace(min_axis, max_axis, 80)
             for label, multiplier, dash, color in [
                 ("y=x (이상)", 1.0, "dash", "#2D3748"),
