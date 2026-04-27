@@ -1381,6 +1381,271 @@ def build_prediction_simulation_base(
     return base
 
 
+def render_md_order_simulation_tab(
+    preorder_df: pd.DataFrame,
+    predictions_df: pd.DataFrame,
+) -> None:
+    st.markdown("### MD 발주 수량 시뮬레이션")
+    st.caption("모델 기준값(OUTFLOW_7D)을 보면서 MD 조정 수량을 직접 입력하고, 조정값이 결품/과발주 영역 중 어디에 위치하는지 확인합니다.")
+
+    base = build_prediction_simulation_base(predictions_df, preorder_df)
+    if base.empty:
+        st.info("시뮬레이션에 사용할 predictions.parquet 데이터가 없거나 OUTFLOW_7D, INITIAL_ORD_QTY 컬럼을 찾을 수 없습니다.")
+        return
+
+    base["ITEM_CODE"] = base["ITEM_CODE"].astype(str).str.strip()
+    if "CENTER_CODE" in base.columns:
+        base["CENTER_CODE"] = base["CENTER_CODE"].map(normalize_center_code)
+
+    base["출시월"] = pd.to_datetime(base["NP_RLSE_DATE"], errors="coerce").dt.to_period("M").astype("string")
+    month_options = sorted(base["출시월"].dropna().unique().tolist())
+
+    filter_cols = st.columns([1.1, 1.1, 1.6, 1])
+    if month_options:
+        selected_month = filter_cols[0].selectbox("출시월", month_options, index=len(month_options) - 1, key="md_sim_month")
+    else:
+        selected_month = "전체"
+        filter_cols[0].text_input("출시월", value="전체", disabled=True, key="md_sim_month_disabled")
+
+    center_options = sorted(preorder_df["CENTER_NM"].dropna().astype(str).unique().tolist()) if "CENTER_NM" in preorder_df.columns else []
+    selected_center = filter_cols[1].selectbox("센터", ["전체"] + center_options, key="md_sim_center")
+    keyword = filter_cols[2].text_input("상품 검색", placeholder="상품코드 또는 상품명", key="md_sim_keyword")
+    top_n = filter_cols[3].number_input("표시 상품 수", min_value=10, max_value=500, value=120, step=10, key="md_sim_top_n")
+
+    scoped = base.copy()
+    if selected_month != "전체":
+        scoped = scoped[scoped["출시월"] == selected_month]
+
+    if selected_center != "전체" and "CENTER_CODE" in scoped.columns:
+        center_codes = (
+            preorder_df.loc[preorder_df["CENTER_NM"].astype(str) == selected_center, "CENTER_CODE"]
+            .map(normalize_center_code)
+            .dropna()
+            .unique()
+            .tolist()
+        )
+        scoped = scoped[scoped["CENTER_CODE"].isin(center_codes)]
+
+    if keyword.strip():
+        raw_keyword = keyword.strip()
+        scoped = scoped[
+            scoped["ITEM_CODE"].astype(str).str.contains(raw_keyword, case=False, na=False)
+            | scoped["ITEM_NM"].astype(str).str.contains(raw_keyword, case=False, na=False)
+        ]
+
+    if scoped.empty:
+        st.info("선택한 조건에 맞는 예측 상품이 없습니다.")
+        return
+
+    item_df = (
+        scoped.groupby("ITEM_CODE", as_index=False)
+        .agg(
+            ITEM_NM=("ITEM_NM", "first"),
+            BRAND=("BRAND", "first"),
+            ITEM_MDDV_NM=("ITEM_MDDV_NM", "first"),
+            ITEM_SMDV_NM=("ITEM_SMDV_NM", "first"),
+            NP_RLSE_DATE=("NP_RLSE_DATE", "first"),
+            OUTFLOW_7D=("OUTFLOW_7D", "sum"),
+            INITIAL_ORD_QTY=("INITIAL_ORD_QTY", "sum"),
+        )
+        .sort_values("OUTFLOW_7D", ascending=False)
+        .head(int(top_n))
+        .reset_index(drop=True)
+    )
+
+    safe_initial = item_df["INITIAL_ORD_QTY"].replace(0, pd.NA)
+    item_df["현재 출고율(%)"] = (item_df["OUTFLOW_7D"] / safe_initial * 100).round(1)
+    item_df["현재 상태"] = classify_outflow_status(item_df["OUTFLOW_7D"] / safe_initial)
+    item_df["MD 조정 수량"] = item_df["INITIAL_ORD_QTY"].round(0).astype("Int64")
+
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("상품 수", f"{len(item_df):,}")
+    k2.metric("모델 기준 합계", format_int(item_df["OUTFLOW_7D"].sum()))
+    k3.metric("현재 초도 합계", format_int(item_df["INITIAL_ORD_QTY"].sum()))
+    normal_count = (item_df["현재 상태"] == OUTFLOW_STATUS_ORDER[2]).sum()
+    k4.metric("현재 정상 상품", f"{normal_count:,}")
+
+    st.markdown("#### MD 조정 입력")
+    st.caption("`MD 조정 수량`만 수정하면 아래 결과표와 로그 스케일 분포가 다시 계산됩니다. 판정 공식은 `출고율 = OUTFLOW_7D / MD 조정 수량`입니다.")
+    editor_df = item_df[
+        [
+            "ITEM_CODE",
+            "ITEM_NM",
+            "BRAND",
+            "ITEM_MDDV_NM",
+            "ITEM_SMDV_NM",
+            "OUTFLOW_7D",
+            "INITIAL_ORD_QTY",
+            "현재 출고율(%)",
+            "현재 상태",
+            "MD 조정 수량",
+        ]
+    ].copy()
+    edited_df = st.data_editor(
+        editor_df,
+        use_container_width=True,
+        height=360,
+        hide_index=True,
+        disabled=[
+            "ITEM_CODE",
+            "ITEM_NM",
+            "BRAND",
+            "ITEM_MDDV_NM",
+            "ITEM_SMDV_NM",
+            "OUTFLOW_7D",
+            "INITIAL_ORD_QTY",
+            "현재 출고율(%)",
+            "현재 상태",
+        ],
+        column_config={
+            "ITEM_CODE": st.column_config.TextColumn("상품코드"),
+            "ITEM_NM": st.column_config.TextColumn("상품명"),
+            "ITEM_MDDV_NM": st.column_config.TextColumn("중분류"),
+            "ITEM_SMDV_NM": st.column_config.TextColumn("소분류"),
+            "OUTFLOW_7D": st.column_config.NumberColumn("모델 기준값(OUTFLOW_7D)", format="%,.0f"),
+            "INITIAL_ORD_QTY": st.column_config.NumberColumn("현재 초도발주량", format="%,.0f"),
+            "현재 출고율(%)": st.column_config.NumberColumn(format="%.1f"),
+            "MD 조정 수량": st.column_config.NumberColumn("MD 조정 수량", min_value=0, step=1, format="%,.0f"),
+        },
+        key=f"md_sim_editor_{selected_month}_{selected_center}_{keyword}_{top_n}",
+    )
+
+    result_df = edited_df.copy()
+    for col in ["OUTFLOW_7D", "INITIAL_ORD_QTY", "MD 조정 수량"]:
+        result_df[col] = pd.to_numeric(result_df[col], errors="coerce").fillna(0)
+
+    safe_adjusted = result_df["MD 조정 수량"].replace(0, pd.NA)
+    adjusted_ratio = result_df["OUTFLOW_7D"] / safe_adjusted
+    adjusted_ratio = adjusted_ratio.mask((result_df["MD 조정 수량"] <= 0) & (result_df["OUTFLOW_7D"] > 0), np.inf)
+    result_df["조정 출고율(%)"] = (adjusted_ratio * 100).replace([np.inf, -np.inf], np.nan).round(1)
+    result_df["조정 상태"] = classify_outflow_status(adjusted_ratio)
+    result_df["MD/OPTIMAL 배수"] = (result_df["MD 조정 수량"] / result_df["OUTFLOW_7D"].replace(0, pd.NA)).round(2)
+    result_df["조정 차이"] = result_df["MD 조정 수량"] - result_df["INITIAL_ORD_QTY"]
+
+    r1, r2, r3, r4 = st.columns(4)
+    r1.metric("MD 조정 합계", format_int(result_df["MD 조정 수량"].sum()))
+    r2.metric("현재 대비 증감", format_int(result_df["조정 차이"].sum()))
+    r3.metric("조정 후 정상", f"{(result_df['조정 상태'] == OUTFLOW_STATUS_ORDER[2]).sum():,}")
+    risk_count = result_df["조정 상태"].isin([OUTFLOW_STATUS_ORDER[0], OUTFLOW_STATUS_ORDER[1], OUTFLOW_STATUS_ORDER[3], OUTFLOW_STATUS_ORDER[4]]).sum()
+    r4.metric("조정 후 위험", f"{risk_count:,}")
+
+    view_cols = [
+        "ITEM_CODE",
+        "ITEM_NM",
+        "OUTFLOW_7D",
+        "INITIAL_ORD_QTY",
+        "MD 조정 수량",
+        "조정 차이",
+        "MD/OPTIMAL 배수",
+        "조정 출고율(%)",
+        "조정 상태",
+    ]
+    st.dataframe(
+        result_df[view_cols].set_index("ITEM_CODE"),
+        use_container_width=True,
+        height=300,
+        column_config={
+            "ITEM_NM": st.column_config.TextColumn("상품명"),
+            "OUTFLOW_7D": st.column_config.NumberColumn("모델 기준값(OUTFLOW_7D)", format="%,.0f"),
+            "INITIAL_ORD_QTY": st.column_config.NumberColumn("현재 초도발주량", format="%,.0f"),
+            "MD 조정 수량": st.column_config.NumberColumn(format="%,.0f"),
+            "조정 차이": st.column_config.NumberColumn(format="%,.0f"),
+            "MD/OPTIMAL 배수": st.column_config.NumberColumn(format="%.2f"),
+            "조정 출고율(%)": st.column_config.NumberColumn(format="%.1f"),
+        },
+    )
+
+    st.markdown("#### 상품별 초도발주량 vs 실출고량(7일치) 조정 분포")
+    scatter_df = result_df[(result_df["OUTFLOW_7D"] > 0) & (result_df["MD 조정 수량"] > 0)].copy()
+    if scatter_df.empty:
+        st.info("로그 스케일 그래프에 표시할 양수 데이터가 없습니다.")
+        return
+
+    fig = px.scatter(
+        scatter_df,
+        x="OUTFLOW_7D",
+        y="MD 조정 수량",
+        color="조정 상태",
+        category_orders={"조정 상태": OUTFLOW_STATUS_ORDER},
+        color_discrete_map=OUTFLOW_STATUS_COLORS,
+        hover_data={
+            "ITEM_NM": True,
+            "ITEM_MDDV_NM": True,
+            "ITEM_SMDV_NM": True,
+            "OUTFLOW_7D": ":,.0f",
+            "INITIAL_ORD_QTY": ":,.0f",
+            "MD 조정 수량": ":,.0f",
+            "MD/OPTIMAL 배수": ":.2f",
+            "조정 출고율(%)": ":.1f",
+            "조정 상태": True,
+        },
+        labels={
+            "OUTFLOW_7D": "OPTIMAL = OUTFLOW_7D (log)",
+            "MD 조정 수량": "MD 조정 수량 (log)",
+            "ITEM_NM": "상품명",
+            "ITEM_MDDV_NM": "중분류",
+            "ITEM_SMDV_NM": "소분류",
+        },
+        height=520,
+    )
+
+    min_axis = max(1, min(scatter_df["OUTFLOW_7D"].min(), scatter_df["MD 조정 수량"].min()))
+    max_axis = max(scatter_df["OUTFLOW_7D"].max(), scatter_df["MD 조정 수량"].max())
+    line_x = np.geomspace(min_axis, max_axis, 100)
+    for label, multiplier, dash, color in [
+        ("y=x (이상)", 1.0, "dash", "#2D3748"),
+        ("MD = 2 x OPTIMAL (과발주)", 2.0, "dot", "#9BA6BD"),
+        ("MD = 0.5 x OPTIMAL (결품)", 0.5, "dot", "#9BA6BD"),
+    ]:
+        fig.add_trace(
+            go.Scatter(
+                x=line_x,
+                y=line_x * multiplier,
+                mode="lines",
+                line=dict(color=color, dash=dash, width=1.4),
+                name=label,
+                hoverinfo="skip",
+            )
+        )
+    fig.update_layout(
+        margin=dict(l=0, r=0, t=20, b=20),
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+        font_size=11,
+        annotations=[
+            dict(
+                text="과발주 영역<br>(MD > OPTIMAL)",
+                xref="paper",
+                yref="paper",
+                x=0.08,
+                y=0.88,
+                showarrow=False,
+                align="left",
+                font=dict(color="#475569", size=12),
+                bordercolor="#64748B",
+                borderwidth=1,
+                bgcolor="rgba(255,255,255,0.84)",
+            ),
+            dict(
+                text="결품 영역<br>(MD < OPTIMAL)",
+                xref="paper",
+                yref="paper",
+                x=0.86,
+                y=0.13,
+                showarrow=False,
+                align="left",
+                font=dict(color="#DC2626", size=12),
+                bordercolor="#EF4444",
+                borderwidth=1,
+                bgcolor="rgba(255,255,255,0.84)",
+            ),
+        ],
+    )
+    fig.update_xaxes(type="log", gridcolor="#EEF2F7", zeroline=False)
+    fig.update_yaxes(type="log", gridcolor="#EEF2F7", zeroline=False)
+    st.plotly_chart(fig, use_container_width=True)
+
+
 @st.cache_data(show_spinner=False)
 def load_center_locations() -> pd.DataFrame:
     if not CENTER_MAP_PATH.exists():
@@ -2606,17 +2871,19 @@ def render_past_dashboard_page(
 ) -> None:
     st.markdown("## 과거 신상품 조회")
     tabs = st.tabs(
-        ["제품별 데이터", "과거 Raw Data", "과거 신상품 조회", "카테고리", "기준일 신상품"]
+        ["제품별 데이터", "과거 Raw Data", "MD 발주 시뮬레이션", "과거 신상품 조회", "카테고리", "기준일 신상품"]
     )
     with tabs[0]:
         render_past_product_data_tab(preorder_df, sales_df, base_date)
     with tabs[1]:
         render_past_raw_data_tab(preorder_df, sales_df, center_order_df, stock_df, base_date)
     with tabs[2]:
-        render_past_simple_lookup(preorder_df, center_order_df, sales_df, predictions_df)
+        render_md_order_simulation_tab(preorder_df, predictions_df)
     with tabs[3]:
-        render_past_category_compare(preorder_df, sales_df, base_date)
+        render_past_simple_lookup(preorder_df, center_order_df, sales_df, predictions_df)
     with tabs[4]:
+        render_past_category_compare(preorder_df, sales_df, base_date)
+    with tabs[5]:
         render_past_current_release_focus(preorder_df, base_date)
 
 
