@@ -72,6 +72,20 @@ TABLEAU_COLORS = [
 
 GEMINI_MODEL = "gemini-2.0-flash"
 INITIAL_ORDER_MULTIPLIER = 2.5
+OUTFLOW_STATUS_BOUNDS = {
+    "slow_stock": 0.333,
+    "over_order_risk": 0.5,
+    "normal": 0.778,
+    "shortage_risk": 1.0,
+}
+OUTFLOW_STATUS_ORDER = ["부진재고", "과발주 위험", "정상", "결품 위험", "결품"]
+OUTFLOW_STATUS_COLORS = {
+    "부진재고": "#E68163",
+    "과발주 위험": "#F7D79A",
+    "정상": "#A9CF7A",
+    "결품 위험": "#F3C96C",
+    "결품": "#EF6F6C",
+}
 
 CENTER_WEIGHT_CONFIG = {
     "20079": {"weight": 0.8, "store_count": 672, "ldu": "광주"},
@@ -132,6 +146,24 @@ def format_md_weekday(value) -> str:
         return "-"
     weekdays = ["월", "화", "수", "목", "금", "토", "일"]
     return f"{date_value.month:02d}/{date_value.day:02d}({weekdays[date_value.weekday()]})"
+
+
+def classify_outflow_status(outflow_ratio: pd.Series) -> pd.Series:
+    ratio = pd.to_numeric(outflow_ratio, errors="coerce")
+    return pd.Series(
+        np.select(
+            [
+                ratio < OUTFLOW_STATUS_BOUNDS["slow_stock"],
+                ratio < OUTFLOW_STATUS_BOUNDS["over_order_risk"],
+                ratio < OUTFLOW_STATUS_BOUNDS["normal"],
+                ratio < OUTFLOW_STATUS_BOUNDS["shortage_risk"],
+                ratio >= OUTFLOW_STATUS_BOUNDS["shortage_risk"],
+            ],
+            OUTFLOW_STATUS_ORDER,
+            default="판정 제외",
+        ),
+        index=ratio.index,
+    )
 
 
 def clean_item_description(text: str) -> list[str]:
@@ -1512,14 +1544,11 @@ def build_past_reference_item_analysis(
     item_df["실출고량"] = item_df.get("실출고량", 0).fillna(0)
 
     safe_initial = item_df["초도발주량"].replace(0, pd.NA)
-    safe_ship = item_df["실출고량"].replace(0, pd.NA)
     item_df["실제출고율(%)"] = (item_df["실출고량"] / safe_initial * 100).round(1)
-    item_df["결품여부"] = item_df["실수요량"] > item_df["실출고량"]
-    item_df["부진여부"] = (item_df["실출고량"] > 0) & ((item_df["실수요량"] / safe_ship) < 0.5)
-    item_df["상태"] = item_df.apply(
-        lambda row: "결품" if row["결품여부"] else ("부진" if row["부진여부"] else "정상"),
-        axis=1,
-    )
+    item_df["출고율"] = item_df["실출고량"] / safe_initial
+    item_df["상태"] = classify_outflow_status(item_df["출고율"])
+    item_df["결품여부"] = item_df["상태"].isin(["결품 위험", "결품"])
+    item_df["부진여부"] = item_df["상태"].isin(["부진재고", "과발주 위험"])
     return item_df.sort_values(["NP_RLSE_DATE", "초도발주량"], ascending=[False, False])
 
 
@@ -1927,21 +1956,13 @@ def render_past_simple_lookup(
         item_df[col] = item_df[col].fillna(0)
 
     safe_initial = item_df["초도발주량"].replace(0, pd.NA)
-    safe_ship = item_df["실출고량"].replace(0, pd.NA)
     item_df["실출고율(%)"] = (item_df["실출고량"] / safe_initial * 100).round(1)
+    item_df["출고율"] = item_df["실출고량"] / safe_initial
     item_df["실수요비율(%)"] = (item_df["실수요"] / safe_initial * 100).round(1)
-    item_df["결핍여부"] = item_df["실수요"] > item_df["실출고량"]
-    item_df["부진여부"] = (item_df["실출고량"] > 0) & (item_df["실수요"] / safe_ship < 0.5)
+    item_df["상태"] = classify_outflow_status(item_df["출고율"])
+    item_df["결품여부"] = item_df["상태"].isin(["결품 위험", "결품"])
+    item_df["부진여부"] = item_df["상태"].isin(["부진재고", "과발주 위험"])
     item_df["출시일자"] = pd.to_datetime(item_df["NP_RLSE_YMD"].astype(str), format="%Y%m%d", errors="coerce")
-
-    def _status(row):
-        if row["결핍여부"]:
-            return "결핍"
-        if row["부진여부"]:
-            return "부진"
-        return "정상"
-
-    item_df["상태"] = item_df.apply(_status, axis=1)
 
     # ── 필터 적용 ─────────────────────────────────────────────────────────────
     filtered = item_df.copy()
@@ -2157,12 +2178,12 @@ def render_past_simple_lookup(
         r1, r2, r3, r4, r5 = st.columns(5)
         r1.metric("전체 상품", f"{len(filtered):,} 종")
         r2.metric("정상", f"{(filtered['상태'] == '정상').sum():,} 종")
-        r3.metric("결핍 발생", f"{(filtered['상태'] == '결핍').sum():,} 종")
-        r4.metric("부진 발생", f"{(filtered['상태'] == '부진').sum():,} 종")
+        r3.metric("결품/위험", f"{filtered['상태'].isin(['결품 위험', '결품']).sum():,} 종")
+        r4.metric("과발주/부진", f"{filtered['상태'].isin(['부진재고', '과발주 위험']).sum():,} 종")
         avg_exit_rt = filtered["실출고율(%)"].mean()
         r5.metric("평균 출고율(7일치)", f"{avg_exit_rt:.1f} %" if pd.notna(avg_exit_rt) else "-")
 
-        status_filter = st.radio("상태 필터", ["전체", "정상", "결핍", "부진"], horizontal=True, key="psl_status_filter")
+        status_filter = st.radio("상태 필터", ["전체", *OUTFLOW_STATUS_ORDER], horizontal=True, key="psl_status_filter")
         res_df = filtered.copy()
         if status_filter != "전체":
             res_df = res_df[res_df["상태"] == status_filter]
@@ -2170,16 +2191,16 @@ def render_past_simple_lookup(
         res_tbl = res_df[[
             "ITEM_CODE", "ITEM_NM", "출시일자", "BRAND", "ITEM_MDDV_NM", "ITEM_SMDV_NM",
             "초도발주량", "초기예약발주", "실출고량", "실출고율(%)", "실수요",
-            "결핍여부", "부진여부", "상태",
+            "결품여부", "부진여부", "상태",
         ]].rename(columns={
             "ITEM_CODE": "제품코드", "ITEM_NM": "제품명", "BRAND": "브랜드",
             "ITEM_MDDV_NM": "중분류", "ITEM_SMDV_NM": "소분류",
-            "결핍여부": "결핍", "부진여부": "부진",
+            "결품여부": "결품/위험", "부진여부": "과발주/부진",
             "실출고량": "실출고량(7일치)", "실출고율(%)": "실출고율(7일치)(%)",
         }).copy()
         res_tbl["출시일자"] = res_tbl["출시일자"].dt.strftime("%Y-%m-%d")
-        res_tbl["결핍"] = res_tbl["결핍"].map({True: "Y", False: "-"})
-        res_tbl["부진"] = res_tbl["부진"].map({True: "Y", False: "-"})
+        res_tbl["결품/위험"] = res_tbl["결품/위험"].map({True: "Y", False: "-"})
+        res_tbl["과발주/부진"] = res_tbl["과발주/부진"].map({True: "Y", False: "-"})
 
         st.dataframe(
             res_tbl.set_index("제품코드"),
@@ -2208,10 +2229,10 @@ def render_past_simple_lookup(
             총초기예약발주=("초기예약발주", "sum"),
             총실출고량=("실출고량", "sum"),
             총실수요=("실수요", "sum"),
-            결핍상품수=("결핍여부", "sum"),
+            결품상품수=("결품여부", "sum"),
             부진상품수=("부진여부", "sum"),
         ).reset_index()
-        cat_agg.columns = [agg_level, "상품수", "총 초도발주량", "총 초기예약발주", "총 실출고량(7일치)", "총 실수요", "결핍 상품수", "부진 상품수"]
+        cat_agg.columns = [agg_level, "상품수", "총 초도발주량", "총 초기예약발주", "총 실출고량(7일치)", "총 실수요", "결품/위험 상품수", "과발주/부진 상품수"]
         safe_tot = cat_agg["총 초도발주량"].replace(0, pd.NA)
         cat_agg["평균 출고율(7일치)(%)"] = (cat_agg["총 실출고량(7일치)"] / safe_tot * 100).round(1)
 
@@ -2250,20 +2271,33 @@ def render_past_simple_lookup(
             st.plotly_chart(fig_bar, use_container_width=True)
 
         with ch2:
-            st.markdown(f"**{agg_level}별 결핍 / 부진 / 정상 상태 현황**")
+            st.markdown(f"**{agg_level}별 출고율 상태 현황**")
 
             def _cnt(grp, state):
                 return grp.apply(lambda x: (x["상태"] == state).sum()).reset_index()
 
             norm_c = _cnt(filtered.groupby(agg_col), "정상"); norm_c.columns = [agg_level, "정상"]
-            out_c = _cnt(filtered.groupby(agg_col), "결핍"); out_c.columns = [agg_level, "결핍"]
-            slow_c = _cnt(filtered.groupby(agg_col), "부진"); slow_c.columns = [agg_level, "부진"]
-            status_df_chart = norm_c.merge(out_c, on=agg_level).merge(slow_c, on=agg_level)
+            slow_stock_c = _cnt(filtered.groupby(agg_col), "부진재고"); slow_stock_c.columns = [agg_level, "부진재고"]
+            over_c = _cnt(filtered.groupby(agg_col), "과발주 위험"); over_c.columns = [agg_level, "과발주 위험"]
+            risk_c = _cnt(filtered.groupby(agg_col), "결품 위험"); risk_c.columns = [agg_level, "결품 위험"]
+            shortage_c = _cnt(filtered.groupby(agg_col), "결품"); shortage_c.columns = [agg_level, "결품"]
+            status_df_chart = (
+                slow_stock_c.merge(over_c, on=agg_level)
+                .merge(norm_c, on=agg_level)
+                .merge(risk_c, on=agg_level)
+                .merge(shortage_c, on=agg_level)
+            )
 
             fig_s = go.Figure()
-            fig_s.add_trace(go.Bar(name="정상", x=status_df_chart[agg_level], y=status_df_chart["정상"], marker_color="#86EFAC"))
-            fig_s.add_trace(go.Bar(name="결핍", x=status_df_chart[agg_level], y=status_df_chart["결핍"], marker_color="#FCA5A5"))
-            fig_s.add_trace(go.Bar(name="부진", x=status_df_chart[agg_level], y=status_df_chart["부진"], marker_color="#FDE68A"))
+            for status in OUTFLOW_STATUS_ORDER:
+                fig_s.add_trace(
+                    go.Bar(
+                        name=status,
+                        x=status_df_chart[agg_level],
+                        y=status_df_chart[status],
+                        marker_color=OUTFLOW_STATUS_COLORS[status],
+                    )
+                )
             fig_s.update_layout(
                 barmode="stack", height=340,
                 margin=dict(l=0, r=0, t=20, b=60),
@@ -2282,11 +2316,12 @@ def render_past_simple_lookup(
             scatter_df,
             x="초도발주량", y="실출고량",
             color="상태",
-            color_discrete_map={"정상": "#16A34A", "결핍": "#DC2626", "부진": "#D97706"},
+            category_orders={"상태": OUTFLOW_STATUS_ORDER},
+            color_discrete_map=OUTFLOW_STATUS_COLORS,
             hover_data={
                 "ITEM_NM": True, "출시일자_str": True,
                 "ITEM_MDDV_NM": True, "ITEM_SMDV_NM": True,
-                "초도발주량": ":,.0f", "실출고량": ":,.0f", "상태": True,
+                "초도발주량": ":,.0f", "실출고량": ":,.0f", "실출고율(%)": ":.1f", "상태": True,
             },
             labels={
                 "ITEM_NM": "제품명", "출시일자_str": "출시일자",
@@ -2299,12 +2334,22 @@ def render_past_simple_lookup(
             scatter_df["초도발주량"].max() if not scatter_df.empty else 1,
             scatter_df["실출고량"].max() if not scatter_df.empty else 1,
         )
-        fig_sc.add_trace(go.Scatter(
-            x=[0, max_val], y=[0, max_val],
-            mode="lines",
-            line=dict(color="#CBD5E1", dash="dash", width=1),
-            name="기준선 (1:1)",
-        ))
+        for label, ratio in [
+            ("0.333 부진재고/과발주 위험", OUTFLOW_STATUS_BOUNDS["slow_stock"]),
+            ("0.5 과발주 위험/정상", OUTFLOW_STATUS_BOUNDS["over_order_risk"]),
+            ("0.778 정상/결품 위험", OUTFLOW_STATUS_BOUNDS["normal"]),
+            ("1.0 결품 기준", OUTFLOW_STATUS_BOUNDS["shortage_risk"]),
+        ]:
+            fig_sc.add_trace(
+                go.Scatter(
+                    x=[0, max_val],
+                    y=[0, max_val * ratio],
+                    mode="lines",
+                    line=dict(color="#9BA6BD", dash="dash", width=1),
+                    name=label,
+                    hoverinfo="skip",
+                )
+            )
         fig_sc.update_layout(
             margin=dict(l=0, r=0, t=20, b=20),
             plot_bgcolor="white", paper_bgcolor="white",
@@ -2315,8 +2360,9 @@ def render_past_simple_lookup(
         st.plotly_chart(fig_sc, use_container_width=True)
         st.markdown(
             "<span style='font-size:0.72rem;color:#94A3B8;'>"
-            "기준선(점선) 위: 실출고량(7일치) > 초도발주량 &nbsp;|&nbsp; "
-            "기준선 아래: 초도발주량 > 실출고량(7일치)"
+            "출고율 = 실출고량(7일치) / 초도발주량. "
+            "0.333 미만: 부진재고, 0.333~0.5: 과발주 위험, 0.5~0.778: 정상, "
+            "0.778~1.0: 결품 위험, 1.0 이상: 결품"
             "</span>",
             unsafe_allow_html=True,
         )
