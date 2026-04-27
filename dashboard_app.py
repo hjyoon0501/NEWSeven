@@ -32,6 +32,7 @@ PREORDER_PATH = APP_DIR / "final_preorder.csv"
 SALES_PATH = APP_DIR / "center_sales_final.csv"
 STOCK_PATH = APP_DIR / "A4_final_CENTER_STK.csv"
 CENTER_ORDER_PATH = APP_DIR / "A1_final_center_order.csv"
+PREDICTIONS_PATH = APP_DIR / "predictions.parquet"
 MASTER_ITEM_PATH = DATA_DIR / "A7_신상품_상품마스터.csv"
 CENTER_MAP_PATH = DATA_DIR / "target_centers_for_map.csv"
 
@@ -1208,36 +1209,54 @@ def load_center_order() -> pd.DataFrame:
     return df
 
 
-def build_center_order_7d_summary(
-    preorder_df: pd.DataFrame,
-    center_order_df: pd.DataFrame,
+@st.cache_data(show_spinner=False)
+def load_predictions() -> pd.DataFrame:
+    predictions_path = PREDICTIONS_PATH if PREDICTIONS_PATH.exists() else DATA_DIR / "predictions.parquet"
+    if not predictions_path.exists():
+        return pd.DataFrame()
+
+    df = pd.read_parquet(predictions_path)
+    rename_map = {
+        "ITEM_CD": "ITEM_CODE",
+        "item_cd": "ITEM_CODE",
+        "item_code": "ITEM_CODE",
+        "CENT_CD": "CENTER_CODE",
+        "cent_cd": "CENTER_CODE",
+        "CENTER_CD": "CENTER_CODE",
+        "center_cd": "CENTER_CODE",
+        "center_code": "CENTER_CODE",
+        "OUTFLOW_7D": "OUTFLOW_7D",
+        "outflow_7d": "OUTFLOW_7D",
+    }
+    df = df.rename(columns={col: rename_map.get(col, col) for col in df.columns})
+    if "OUTFLOW_7D" not in df.columns:
+        return pd.DataFrame()
+    if "ITEM_CODE" in df.columns:
+        df["ITEM_CODE"] = df["ITEM_CODE"].map(normalize_center_code)
+    if "CENTER_CODE" in df.columns:
+        df["CENTER_CODE"] = df["CENTER_CODE"].map(normalize_center_code)
+    df["OUTFLOW_7D"] = clean_numeric(df["OUTFLOW_7D"]).fillna(0)
+    return df
+
+
+def build_outflow_7d_summary(
+    predictions_df: pd.DataFrame,
     group_cols: list[str],
 ) -> pd.DataFrame:
-    if center_order_df.empty or "CONV_QTY" not in center_order_df.columns:
+    if predictions_df.empty or "OUTFLOW_7D" not in predictions_df.columns:
+        return pd.DataFrame(columns=group_cols + ["실출고량"])
+    missing_cols = [col for col in group_cols if col not in predictions_df.columns]
+    if missing_cols:
         return pd.DataFrame(columns=group_cols + ["실출고량"])
 
-    release_lookup = (
-        preorder_df[["ITEM_CODE", "NP_RLSE_DATE"]]
-        .dropna(subset=["ITEM_CODE", "NP_RLSE_DATE"])
-        .drop_duplicates("ITEM_CODE")
-    )
-    scoped = center_order_df.merge(release_lookup, on="ITEM_CODE", how="left")
-    if "ORD_DATE" not in scoped.columns:
-        scoped["ORD_DATE"] = pd.to_datetime(scoped.get("ORD_YMD"), errors="coerce", format="%Y%m%d")
-
-    scoped = scoped[
-        scoped["ORD_DATE"].notna()
-        & scoped["NP_RLSE_DATE"].notna()
-        & scoped["ORD_DATE"].ge(scoped["NP_RLSE_DATE"])
-        & scoped["ORD_DATE"].lt(scoped["NP_RLSE_DATE"] + pd.Timedelta(days=7))
-    ].copy()
+    scoped = predictions_df[group_cols + ["OUTFLOW_7D"]].copy()
     if scoped.empty:
         return pd.DataFrame(columns=group_cols + ["실출고량"])
 
     return (
-        scoped.groupby(group_cols, as_index=False)["CONV_QTY"]
+        scoped.groupby(group_cols, as_index=False)["OUTFLOW_7D"]
         .sum()
-        .rename(columns={"CONV_QTY": "실출고량"})
+        .rename(columns={"OUTFLOW_7D": "실출고량"})
     )
 
 
@@ -1455,7 +1474,7 @@ def build_item_summary(filtered_preorder: pd.DataFrame, filtered_sales: pd.DataF
 def build_past_reference_item_analysis(
     preorder_df: pd.DataFrame,
     sales_df: pd.DataFrame,
-    center_order_df: pd.DataFrame,
+    predictions_df: pd.DataFrame,
 ) -> pd.DataFrame:
     if preorder_df.empty:
         return pd.DataFrame()
@@ -1487,8 +1506,8 @@ def build_past_reference_item_analysis(
         item_df = item_df.merge(sales_summary, on="ITEM_CODE", how="left")
     item_df["실수요량"] = item_df.get("실수요량", 0).fillna(0)
 
-    if not center_order_df.empty:
-        shipped = build_center_order_7d_summary(preorder_df, center_order_df, ["ITEM_CODE"])
+    if not predictions_df.empty:
+        shipped = build_outflow_7d_summary(predictions_df, ["ITEM_CODE"])
         item_df = item_df.merge(shipped, on="ITEM_CODE", how="left")
     item_df["실출고량"] = item_df.get("실출고량", 0).fillna(0)
 
@@ -1631,11 +1650,12 @@ def render_past_product_lookup(
     preorder_df: pd.DataFrame,
     sales_df: pd.DataFrame,
     center_order_df: pd.DataFrame,
+    predictions_df: pd.DataFrame,
     base_date: pd.Timestamp,
 ) -> None:
     st.subheader("과거 신상품 조회")
 
-    item_df = build_past_reference_item_analysis(preorder_df, sales_df, center_order_df)
+    item_df = build_past_reference_item_analysis(preorder_df, sales_df, predictions_df)
     if item_df.empty:
         st.info("과거 신상품 조회를 위한 데이터가 부족합니다.")
         return
@@ -1732,8 +1752,8 @@ def render_past_product_lookup(
         center_pre["센터코드"] = pd.to_numeric(center_pre["센터코드"], errors="coerce")
 
         center_ship = pd.DataFrame(columns=["센터코드", "실출고량"])
-        if not center_order_df.empty:
-            center_ship = build_center_order_7d_summary(item_pre, center_order_df, ["ITEM_CODE", "CENTER_CODE"])
+        if not predictions_df.empty:
+            center_ship = build_outflow_7d_summary(predictions_df, ["ITEM_CODE", "CENTER_CODE"])
             center_ship = center_ship[center_ship["ITEM_CODE"].astype(str) == selected_item_code]
             center_ship = center_ship.rename(columns={"CENTER_CODE": "센터코드"})[["센터코드", "실출고량"]]
             center_ship["센터코드"] = pd.to_numeric(center_ship["센터코드"], errors="coerce")
@@ -1844,6 +1864,7 @@ def render_past_simple_lookup(
     preorder_df: pd.DataFrame,
     center_order_df: pd.DataFrame,
     sales_df: pd.DataFrame,
+    predictions_df: pd.DataFrame,
 ) -> None:
     if preorder_df.empty:
         st.info("조회할 과거 상품 데이터가 없습니다.")
@@ -1888,8 +1909,8 @@ def render_past_simple_lookup(
         전체점포수=("total_store_cnt", "sum"),
     ).reset_index()
 
-    if not center_order_df.empty and "CONV_QTY" in center_order_df.columns:
-        item_orders = build_center_order_7d_summary(preorder_df, center_order_df, ["ITEM_CODE"])
+    if not predictions_df.empty:
+        item_orders = build_outflow_7d_summary(predictions_df, ["ITEM_CODE"])
     else:
         item_orders = pd.DataFrame(columns=["ITEM_CODE", "실출고량"])
 
@@ -2063,9 +2084,8 @@ def render_past_simple_lookup(
             center_pre = center_pre[["센터코드", "센터명", "초도발주량", "4일치 예약주문", "10일치 예약주문", "참여점포", "전체점포"]]
             center_pre["센터코드"] = center_pre["센터코드"].map(normalize_center_code)
 
-            if not center_order_df.empty and "CONV_QTY" in center_order_df.columns:
-                item_pre_for_ship = item_pre[["ITEM_CODE", "NP_RLSE_DATE"]].drop_duplicates()
-                c_orders = build_center_order_7d_summary(item_pre_for_ship, center_order_df, ["ITEM_CODE", "CENTER_CODE"])
+            if not predictions_df.empty:
+                c_orders = build_outflow_7d_summary(predictions_df, ["ITEM_CODE", "CENTER_CODE"])
                 c_orders = c_orders[c_orders["ITEM_CODE"].astype(str) == str(sel_code)]
                 c_orders = c_orders.rename(columns={"CENTER_CODE": "센터코드"})[["센터코드", "실출고량"]]
                 c_orders["센터코드"] = c_orders["센터코드"].map(normalize_center_code)
@@ -2406,6 +2426,7 @@ def render_past_dashboard_page(
     sales_df: pd.DataFrame,
     center_order_df: pd.DataFrame,
     stock_df: pd.DataFrame,
+    predictions_df: pd.DataFrame,
     base_date: pd.Timestamp,
 ) -> None:
     st.markdown("## 과거 신상품 조회")
@@ -2417,7 +2438,7 @@ def render_past_dashboard_page(
     with tabs[1]:
         render_past_raw_data_tab(preorder_df, sales_df, center_order_df, stock_df, base_date)
     with tabs[2]:
-        render_past_simple_lookup(preorder_df, center_order_df, sales_df)
+        render_past_simple_lookup(preorder_df, center_order_df, sales_df, predictions_df)
     with tabs[3]:
         render_past_category_compare(preorder_df, sales_df, base_date)
     with tabs[4]:
@@ -2428,6 +2449,7 @@ preorder_df = load_preorder()
 sales_df = load_sales()
 stock_df = load_stock()
 center_order_df = load_center_order()
+predictions_df = load_predictions()
 item_master = build_item_master(preorder_df)
 center_master = build_center_master(preorder_df)
 
@@ -2435,6 +2457,7 @@ full_preorder_df = preorder_df.copy()
 full_sales_df = sales_df.copy()
 full_stock_df = stock_df.copy()
 full_center_order_df = center_order_df.copy()
+full_predictions_df = predictions_df.copy()
 full_item_master = item_master.copy()
 
 inject_theme()
@@ -2523,6 +2546,7 @@ if selected_page == "과거 신상품 조회":
             ("센터 재고 Raw", not full_stock_df.empty),
             ("매출/수요 Raw", not full_sales_df.empty),
             ("예약주문 Raw", not full_preorder_df.empty),
+            ("OUTFLOW_7D 예측", not full_predictions_df.empty),
         ]
         for label, connected in status_items:
             if connected:
@@ -2535,6 +2559,7 @@ if selected_page == "과거 신상품 조회":
         full_sales_df,
         full_center_order_df,
         full_stock_df,
+        full_predictions_df,
         past_base_date,
     )
     st.stop()
