@@ -1507,14 +1507,16 @@ def render_md_order_simulation_tab(
     ]
     column_config = {"상품": st.column_config.TextColumn("상품", width="medium")}
     disabled_cols = ["상품"]
+    md_column_by_center = {}
     for center_code in center_codes:
         center_name = center_names.get(center_code, center_code)
-        ml_col = f"{center_name} ML"
-        md_col = f"{center_name} MD"
+        ml_col = f"ML_{center_code}"
+        md_col = f"MD_{center_code}"
+        md_column_by_center[center_code] = md_col
         editor_df[ml_col] = display_ml[center_code].values
         editor_df[md_col] = display_md[center_code].values
-        column_config[ml_col] = st.column_config.NumberColumn(f"{center_name}\n모델", format="%,.0f")
-        column_config[md_col] = st.column_config.NumberColumn(f"{center_name}\nMD", min_value=0, step=1, format="%,.0f")
+        column_config[ml_col] = st.column_config.NumberColumn(f"{center_name} 모델", format="%,.0f")
+        column_config[md_col] = st.column_config.NumberColumn(f"{center_name} MD", min_value=0, step=1, format="%,.0f")
         disabled_cols.append(ml_col)
 
     k1, k2, k3, k4 = st.columns(4)
@@ -1552,8 +1554,7 @@ def render_md_order_simulation_tab(
     if apply_clicked:
         applied = pd.DataFrame(index=current_pivot.index, columns=center_codes, dtype=float)
         for center_code in center_codes:
-            center_name = center_names.get(center_code, center_code)
-            md_col = f"{center_name} MD"
+            md_col = md_column_by_center[center_code]
             applied[center_code] = pd.to_numeric(edited_df[md_col], errors="coerce").fillna(0) * unit_divisor
         st.session_state[state_key] = applied
         st.session_state[edit_key] = False
