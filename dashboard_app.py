@@ -1349,6 +1349,38 @@ def build_prediction_initial_outflow_scatter(
     return scatter_df
 
 
+def build_prediction_simulation_base(
+    predictions_df: pd.DataFrame,
+    preorder_df: pd.DataFrame,
+) -> pd.DataFrame:
+    required_cols = {"ITEM_CODE", "OUTFLOW_7D", "INITIAL_ORD_QTY"}
+    if predictions_df.empty or not required_cols.issubset(predictions_df.columns):
+        return pd.DataFrame()
+
+    base = predictions_df.copy()
+    if "NP_RLSE_YMD" in base.columns:
+        base["NP_RLSE_DATE"] = pd.to_datetime(base["NP_RLSE_YMD"], errors="coerce")
+    elif "NP_RLSE_DATE" in base.columns:
+        base["NP_RLSE_DATE"] = pd.to_datetime(base["NP_RLSE_DATE"], errors="coerce")
+
+    item_meta = (
+        preorder_df[
+            ["ITEM_CODE", "ITEM_NM", "BRAND", "ITEM_MDDV_NM", "ITEM_SMDV_NM", "NP_RLSE_DATE"]
+        ]
+        .drop_duplicates("ITEM_CODE")
+        .rename(columns={"NP_RLSE_DATE": "PREORDER_RLSE_DATE"})
+    )
+    base = base.merge(item_meta, on="ITEM_CODE", how="left")
+    if "NP_RLSE_DATE" not in base.columns:
+        base["NP_RLSE_DATE"] = pd.NaT
+    base["NP_RLSE_DATE"] = base["NP_RLSE_DATE"].fillna(base["PREORDER_RLSE_DATE"])
+    for col in ["ITEM_NM", "BRAND", "ITEM_MDDV_NM", "ITEM_SMDV_NM"]:
+        if col not in base.columns:
+            base[col] = ""
+        base[col] = base[col].fillna("")
+    return base
+
+
 @st.cache_data(show_spinner=False)
 def load_center_locations() -> pd.DataFrame:
     if not CENTER_MAP_PATH.exists():
