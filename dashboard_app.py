@@ -116,6 +116,23 @@ def format_won(value: float) -> str:
     return f"{value:,.0f}"
 
 
+def normalize_center_code(value) -> str:
+    if pd.isna(value):
+        return ""
+    text = str(value).strip()
+    if text.endswith(".0"):
+        text = text[:-2]
+    return text
+
+
+def format_md_weekday(value) -> str:
+    date_value = pd.to_datetime(value, errors="coerce")
+    if pd.isna(date_value):
+        return "-"
+    weekdays = ["월", "화", "수", "목", "금", "토", "일"]
+    return f"{date_value.month:02d}/{date_value.day:02d}({weekdays[date_value.weekday()]})"
+
+
 def clean_item_description(text: str) -> list[str]:
     if pd.isna(text):
         return []
@@ -606,15 +623,16 @@ def build_center_initial_order_plan(center_detail: pd.DataFrame) -> pd.DataFrame
         return center_detail
 
     plan = center_detail.copy()
-    plan["CENTER_CODE"] = plan["CENTER_CODE"].astype(str).str.strip()
+    plan["CENTER_CODE"] = plan["CENTER_CODE"].map(normalize_center_code)
     plan["센터 가중치"] = plan["CENTER_CODE"].map(
         lambda code: CENTER_WEIGHT_CONFIG.get(code, {}).get("weight", 1.0)
     )
     plan["기준 점포수"] = plan["CENTER_CODE"].map(
         lambda code: CENTER_WEIGHT_CONFIG.get(code, {}).get("store_count")
     )
+    center_name_by_code = plan.drop_duplicates("CENTER_CODE").set_index("CENTER_CODE")["CENTER_NM"].to_dict()
     plan["LDU"] = plan["CENTER_CODE"].map(
-        lambda code: CENTER_WEIGHT_CONFIG.get(code, {}).get("ldu", plan.loc[plan["CENTER_CODE"] == code, "CENTER_NM"].iloc[0])
+        lambda code: CENTER_WEIGHT_CONFIG.get(code, {}).get("ldu") or center_name_by_code.get(code, code)
     )
     plan["산식 초도예측량"] = (
         plan["RESERVATION_QTY"] * INITIAL_ORDER_MULTIPLIER * plan["센터 가중치"]
@@ -889,7 +907,7 @@ def load_preorder() -> pd.DataFrame:
         df[col] = clean_numeric(df[col]).fillna(0)
 
     df["ITEM_CODE"] = df["ITEM_CODE"].astype(str).str.strip()
-    df["CENTER_CODE"] = df["CENTER_CODE"].astype(str).str.strip()
+    df["CENTER_CODE"] = df["CENTER_CODE"].map(normalize_center_code)
     df["NP_RLSE_DATE"] = pd.to_datetime(df["NP_RLSE_YMD"].astype(str), format="%Y%m%d", errors="coerce")
     df["intro_rate_pct"] = df["GOAL_INTRO_RT"]
     df["reservation_qty_total"] = df["total_pre_order_qty(D-11~D-8)"]
@@ -926,7 +944,7 @@ def load_sales() -> pd.DataFrame:
 def load_stock() -> pd.DataFrame:
     df = pd.read_csv(STOCK_PATH)
     df["ITEM_CODE"] = df["ITEM_CODE"].astype(str).str.strip()
-    df["CENTER_CODE"] = df["CENTER_CODE"].astype(str).str.strip()
+    df["CENTER_CODE"] = df["CENTER_CODE"].map(normalize_center_code)
     df["BIZ_DT"] = pd.to_datetime(df["BIZ_DATE"].astype(str), format="%Y%m%d", errors="coerce")
     df["BOOK_END_QTY"] = clean_numeric(df["BOOK_END_QTY"]).fillna(0)
     return df
@@ -940,7 +958,7 @@ def load_center_order() -> pd.DataFrame:
     if "ITEM_CD" in df.columns:
         df["ITEM_CODE"] = df["ITEM_CD"].astype(str).str.strip()
     if "CENT_CD" in df.columns:
-        df["CENTER_CODE"] = df["CENT_CD"].astype(str).str.strip()
+        df["CENTER_CODE"] = df["CENT_CD"].map(normalize_center_code)
     if "SUM(A.CONV_QTY)" in df.columns:
         df["CONV_QTY"] = clean_numeric(df["SUM(A.CONV_QTY)"]).fillna(0)
     else:
@@ -965,6 +983,8 @@ def load_center_locations() -> pd.DataFrame:
     for col in ["CENTER_CODE", "CENTER_NM", "CENTER_LABEL"]:
         if col in df.columns:
             df[col] = df[col].astype(str).str.strip()
+    if "CENTER_CODE" in df.columns:
+        df["CENTER_CODE"] = df["CENTER_CODE"].map(normalize_center_code)
     for col in ["LAT", "LON", "STORE_COUNT"]:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
@@ -1342,7 +1362,7 @@ def render_past_product_lookup(
     center_order_df: pd.DataFrame,
     base_date: pd.Timestamp,
 ) -> None:
-    st.subheader("예약/수요 비교")
+    st.subheader("과거 신상품 조회")
 
     item_df = build_past_reference_item_analysis(preorder_df, sales_df, center_order_df)
     if item_df.empty:
@@ -1497,6 +1517,11 @@ def render_past_raw_data_tab(
     base_date: pd.Timestamp,
 ) -> None:
     st.subheader("과거 Raw Data")
+    raw_keyword = st.text_input(
+        "코드명/제품명 검색",
+        key="past_raw_data_search",
+        placeholder="제품코드, 코드명 또는 제품명을 입력하세요",
+    ).strip()
     datasets = [
         ("센터 발주 Raw", center_order_df, "center_order_filtered.csv"),
         ("센터 재고 Raw", stock_df, "center_stock_filtered.csv"),
@@ -1518,6 +1543,20 @@ def render_past_raw_data_tab(
             filtered = filtered[filtered["SALE_DATE"].isna() | (filtered["SALE_DATE"] <= base_date)]
         elif "NP_RLSE_DATE" in filtered.columns:
             filtered = filtered[filtered["NP_RLSE_DATE"].isna() | (filtered["NP_RLSE_DATE"] <= base_date)]
+
+        if raw_keyword:
+            searchable_columns = [
+                col
+                for col in ["ITEM_CODE", "ITEM_CD", "ITEM_NM", "상품명", "제품명", "CENTER_CODE", "CENT_CD"]
+                if col in filtered.columns
+            ]
+            if searchable_columns:
+                search_mask = pd.Series(False, index=filtered.index)
+                for col in searchable_columns:
+                    search_mask = search_mask | filtered[col].astype(str).str.contains(
+                        raw_keyword, case=False, na=False
+                    )
+                filtered = filtered[search_mask]
 
         left, right = st.columns([2.4, 1])
         left.dataframe(filtered.head(200), width="stretch", height=300)
@@ -1741,8 +1780,22 @@ def render_past_simple_lookup(
             center_pre = item_pre[[
                 "CENTER_CODE", "CENTER_NM", "INITIAL_ORD_QTY",
                 "total_pre_order_qty(D-11~D-8)", "ordering_store_cnt", "total_store_cnt",
+                *[col for col in PREORDER_DAY_COLUMNS if col in item_pre.columns],
             ]].copy()
-            center_pre.columns = ["센터코드", "센터명", "초도발주량", "사전예약발주", "참여점포", "전체점포"]
+            center_pre = center_pre.rename(
+                columns={
+                    "CENTER_CODE": "센터코드",
+                    "CENTER_NM": "센터명",
+                    "INITIAL_ORD_QTY": "초도발주량",
+                    "total_pre_order_qty(D-11~D-8)": "4일치 예약주문",
+                    "ordering_store_cnt": "참여점포",
+                    "total_store_cnt": "전체점포",
+                }
+            )
+            ten_day_cols = [col for col in PREORDER_DAY_COLUMNS[:10] if col in center_pre.columns]
+            center_pre["10일치 예약주문"] = center_pre[ten_day_cols].sum(axis=1) if ten_day_cols else center_pre["4일치 예약주문"]
+            center_pre = center_pre[["센터코드", "센터명", "초도발주량", "4일치 예약주문", "10일치 예약주문", "참여점포", "전체점포"]]
+            center_pre["센터코드"] = center_pre["센터코드"].map(normalize_center_code)
 
             if not center_order_df.empty and "CONV_QTY" in center_order_df.columns:
                 c_orders = (
@@ -1750,6 +1803,7 @@ def render_past_simple_lookup(
                     .groupby("CENTER_CODE")["CONV_QTY"].sum()
                     .reset_index().rename(columns={"CENTER_CODE": "센터코드", "CONV_QTY": "실출고량"})
                 )
+                c_orders["센터코드"] = c_orders["센터코드"].map(normalize_center_code)
             else:
                 c_orders = pd.DataFrame(columns=["센터코드", "실출고량"])
 
@@ -1765,16 +1819,22 @@ def render_past_simple_lookup(
             c_merged = center_pre.merge(c_orders, on="센터코드", how="left").merge(c_sales, on="센터명", how="left")
             c_merged["실출고량"] = c_merged["실출고량"].fillna(0)
             c_merged["실수요"] = c_merged["실수요"].fillna(0)
+            c_merged["실수요량(또는 실출고량)"] = np.where(
+                c_merged["실수요"] > 0,
+                c_merged["실수요"],
+                c_merged["실출고량"],
+            )
             safe_init = c_merged["초도발주량"].replace(0, pd.NA)
             c_merged["출고율(%)"] = (c_merged["실출고량"] / safe_init * 100).round(1)
 
             st.dataframe(
-                c_merged.set_index("센터명")[["초도발주량", "사전예약발주", "실출고량", "출고율(%)", "실수요", "참여점포", "전체점포"]],
+                c_merged.set_index("센터명")[["4일치 예약주문", "10일치 예약주문", "초도발주량", "실출고량", "출고율(%)", "실수요", "참여점포", "전체점포"]],
                 use_container_width=True,
                 height=300,
                 column_config={
                     "초도발주량": st.column_config.NumberColumn(format="%,.0f"),
-                    "사전예약발주": st.column_config.NumberColumn(format="%,.0f"),
+                    "4일치 예약주문": st.column_config.NumberColumn(format="%,.0f"),
+                    "10일치 예약주문": st.column_config.NumberColumn(format="%,.0f"),
                     "실출고량": st.column_config.NumberColumn(format="%,.0f"),
                     "실수요": st.column_config.NumberColumn(format="%,.0f"),
                     "출고율(%)": st.column_config.NumberColumn(format="%.1f"),
@@ -1785,9 +1845,10 @@ def render_past_simple_lookup(
 
             if not c_merged.empty:
                 fig_c = go.Figure()
+                fig_c.add_trace(go.Bar(name="4일치 예약주문", x=c_merged["센터명"], y=c_merged["4일치 예약주문"], marker_color="#A7F3D0"))
+                fig_c.add_trace(go.Bar(name="10일치 예약주문", x=c_merged["센터명"], y=c_merged["10일치 예약주문"], marker_color="#34D399"))
                 fig_c.add_trace(go.Bar(name="초도발주량", x=c_merged["센터명"], y=c_merged["초도발주량"], marker_color="#93C5FD"))
-                fig_c.add_trace(go.Bar(name="실출고량", x=c_merged["센터명"], y=c_merged["실출고량"], marker_color="#1D4ED8"))
-                fig_c.add_trace(go.Bar(name="실수요", x=c_merged["센터명"], y=c_merged["실수요"], marker_color="#1E3A8A"))
+                fig_c.add_trace(go.Bar(name="실수요량(또는 실출고량)", x=c_merged["센터명"], y=c_merged["실수요량(또는 실출고량)"], marker_color="#1E3A8A"))
                 fig_c.update_layout(
                     barmode="group", height=290,
                     margin=dict(l=0, r=0, t=20, b=80),
@@ -1799,14 +1860,14 @@ def render_past_simple_lookup(
                 fig_c.update_yaxes(gridcolor="#F1F5F9", tickformat=",")
                 st.plotly_chart(fig_c, use_container_width=True)
 
-    # ══ SECTION 3: 이동 결과 데이터화 ══════════════════════════════════════════
+    # ══ SECTION 3: 분석 자료 ══════════════════════════════════════════
     st.markdown("---")
-    st.markdown("#### 이동 결과 데이터화")
+    st.markdown("#### 분석 자료")
 
     sub1, sub2 = st.tabs(["상품별 분석", "중/소분류 집계"])
 
     with sub1:
-        st.markdown("#### 상품별 이동 결과")
+        st.markdown("#### 상품별 상태 분석")
 
         r1, r2, r3, r4, r5 = st.columns(5)
         r1.metric("전체 상품", f"{len(filtered):,} 종")
@@ -1975,81 +2036,71 @@ def render_past_simple_lookup(
 
 
 def render_past_category_compare(preorder_df: pd.DataFrame, sales_df: pd.DataFrame, base_date: pd.Timestamp) -> None:
-    st.subheader("중/소분류별 예약주문 · 초도발주 · 실수요 비교")
-    st.caption("상품군별 흐름을 살펴본 뒤, 선택 상품의 센터 상세를 함께 확인합니다.")
+    st.subheader("카테고리")
+    st.caption("중/소분류별 예약주문, 초도발주, 실수요 흐름을 요약합니다.")
 
     analysis = build_preorder_sales_analysis(preorder_df, sales_df)
     if analysis.empty:
-        st.info("카테고리 비교를 만들기 위한 데이터가 부족합니다.")
+        st.info("카테고리 데이터를 만들기 위한 데이터가 부족합니다.")
         return
     analysis = analysis[analysis["NP_RLSE_DATE"].le(base_date)].copy()
     if analysis.empty:
         st.info("기준일 이전 데이터가 없습니다.")
         return
 
-    mddv_options = sorted(analysis["ITEM_MDDV_NM"].dropna().astype(str).unique().tolist())
-    selected_mddv = st.selectbox("중분류", mddv_options, key="past_category_compare_mddv")
-    scoped = analysis[analysis["ITEM_MDDV_NM"].astype(str) == selected_mddv].copy()
-
-    smdv_options = sorted(scoped["ITEM_SMDV_NM"].dropna().astype(str).unique().tolist())
-    selected_smdv = st.selectbox("소분류", smdv_options, key="past_category_compare_smdv")
-    scoped = scoped[scoped["ITEM_SMDV_NM"].astype(str) == selected_smdv].copy()
-
-    item_options = (
-        scoped[["ITEM_CODE", "ITEM_NM"]]
-        .drop_duplicates()
-        .sort_values(["ITEM_NM", "ITEM_CODE"])
-        .assign(label=lambda df: df["ITEM_NM"].astype(str) + " (" + df["ITEM_CODE"].astype(str) + ")")
-    )
-    selected_item_label = st.selectbox("상품", item_options["label"].tolist(), key="past_category_compare_item")
-    selected_item_code = str(item_options.loc[item_options["label"] == selected_item_label, "ITEM_CODE"].iloc[0])
-
-    item_scoped = scoped[scoped["ITEM_CODE"].astype(str) == selected_item_code].copy()
-    metrics = item_scoped[["preorder_qty", "initial_order_qty", "actual_sales_qty_7d", "over_order_gap"]].sum()
-    top_cols = st.columns(4)
-    top_cols[0].metric("예약주문량", f"{metrics['preorder_qty']:,.0f}")
-    top_cols[1].metric("초도발주량", f"{metrics['initial_order_qty']:,.0f}")
-    top_cols[2].metric("매출 기반 실수요량", f"{metrics['actual_sales_qty_7d']:,.0f}")
-    top_cols[3].metric("과발주 갭", f"{metrics['over_order_gap']:,.0f}")
-
-    left, right = st.columns([1.2, 1])
-    chart_source = pd.DataFrame(
-        {
-            "지표": ["예약주문량", "초도발주량", "매출 기반 실수요량"],
-            "수량": [metrics["preorder_qty"], metrics["initial_order_qty"], metrics["actual_sales_qty_7d"]],
-        }
-    )
-    left.bar_chart(chart_source.set_index("지표"), width="stretch")
+    category_level = st.radio("집계 기준", ["중분류", "소분류"], horizontal=True, key="past_category_level")
+    group_cols = ["ITEM_MDDV_NM"] if category_level == "중분류" else ["ITEM_MDDV_NM", "ITEM_SMDV_NM"]
     category_summary = (
-        scoped.groupby(["ITEM_MDDV_NM", "ITEM_SMDV_NM"], as_index=False)[
-            ["preorder_qty", "initial_order_qty", "actual_sales_qty_7d"]
-        ]
-        .sum()
-        .rename(
-            columns={
-                "ITEM_MDDV_NM": "중분류",
-                "ITEM_SMDV_NM": "소분류",
-                "preorder_qty": "예약주문량",
-                "initial_order_qty": "초도발주량",
-                "actual_sales_qty_7d": "매출 기반 실수요량(7일)",
-            }
+        analysis.groupby(group_cols, as_index=False)
+        .agg(
+            상품수=("ITEM_CODE", "nunique"),
+            예약주문량=("preorder_qty", "sum"),
+            초도발주량=("initial_order_qty", "sum"),
+            실수요량=("actual_sales_qty_7d", "sum"),
         )
+        .rename(columns={"ITEM_MDDV_NM": "중분류", "ITEM_SMDV_NM": "소분류"})
     )
-    right.dataframe(category_summary, width="stretch", height=220, hide_index=True)
+    category_summary["과발주 갭"] = category_summary["초도발주량"] - category_summary["실수요량"]
 
-    detail_display = item_scoped[
-        ["CENTER_NM", "NP_RLSE_DATE", "preorder_qty", "initial_order_qty", "actual_sales_qty_7d", "over_order_gap"]
-    ].rename(
-        columns={
-            "CENTER_NM": "센터",
-            "NP_RLSE_DATE": "출시일",
-            "preorder_qty": "예약주문량",
-            "initial_order_qty": "초도발주량",
-            "actual_sales_qty_7d": "매출 기반 실수요량(7일)",
-            "over_order_gap": "과발주 갭",
-        }
+    metrics = category_summary[["예약주문량", "초도발주량", "실수요량", "과발주 갭"]].sum()
+    top_cols = st.columns(4)
+    top_cols[0].metric("예약주문량", f"{metrics['예약주문량']:,.0f}")
+    top_cols[1].metric("초도발주량", f"{metrics['초도발주량']:,.0f}")
+    top_cols[2].metric("매출 기반 실수요량", f"{metrics['실수요량']:,.0f}")
+    top_cols[3].metric("과발주 갭", f"{metrics['과발주 갭']:,.0f}")
+
+    category_label_col = "중분류" if category_level == "중분류" else "소분류"
+    chart_source = category_summary.sort_values("초도발주량", ascending=False).head(20)
+    fig = go.Figure()
+    fig.add_trace(go.Bar(name="예약주문량", x=chart_source[category_label_col], y=chart_source["예약주문량"], marker_color="#34D399"))
+    fig.add_trace(go.Bar(name="초도발주량", x=chart_source[category_label_col], y=chart_source["초도발주량"], marker_color="#93C5FD"))
+    fig.add_trace(go.Bar(name="매출 기반 실수요량", x=chart_source[category_label_col], y=chart_source["실수요량"], marker_color="#1E3A8A"))
+    fig.update_layout(
+        barmode="group",
+        height=360,
+        margin=dict(l=0, r=0, t=20, b=80),
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        font_size=11,
     )
-    st.dataframe(detail_display, width="stretch", height=320, hide_index=True)
+    fig.update_xaxes(tickangle=-35, showgrid=False)
+    fig.update_yaxes(gridcolor="#F1F5F9", tickformat=",")
+    st.plotly_chart(fig, use_container_width=True)
+
+    st.dataframe(
+        category_summary.sort_values("초도발주량", ascending=False),
+        width="stretch",
+        height=360,
+        hide_index=True,
+        column_config={
+            "상품수": st.column_config.NumberColumn(format="%,.0f"),
+            "예약주문량": st.column_config.NumberColumn(format="%,.0f"),
+            "초도발주량": st.column_config.NumberColumn(format="%,.0f"),
+            "실수요량": st.column_config.NumberColumn(format="%,.0f"),
+            "과발주 갭": st.column_config.NumberColumn(format="%,.0f"),
+        },
+    )
 
 
 def render_past_current_release_focus(preorder_df: pd.DataFrame, base_date: pd.Timestamp) -> None:
@@ -2090,21 +2141,19 @@ def render_past_dashboard_page(
     stock_df: pd.DataFrame,
     base_date: pd.Timestamp,
 ) -> None:
-    st.markdown("## 신상품 과거 Raw Data")
+    st.markdown("## 과거 신상품 조회")
     tabs = st.tabs(
-        ["제품별 데이터", "예약/수요 비교", "과거 Raw Data", "과거 신상품 조회", "카테고리 비교", "기준일 신상품"]
+        ["제품별 데이터", "과거 Raw Data", "과거 신상품 조회", "카테고리", "기준일 신상품"]
     )
     with tabs[0]:
         render_past_product_data_tab(preorder_df, sales_df, base_date)
     with tabs[1]:
-        render_past_product_lookup(preorder_df, sales_df, center_order_df, base_date)
-    with tabs[2]:
         render_past_raw_data_tab(preorder_df, sales_df, center_order_df, stock_df, base_date)
-    with tabs[3]:
+    with tabs[2]:
         render_past_simple_lookup(preorder_df, center_order_df, sales_df)
-    with tabs[4]:
+    with tabs[3]:
         render_past_category_compare(preorder_df, sales_df, base_date)
-    with tabs[5]:
+    with tabs[4]:
         render_past_current_release_focus(preorder_df, base_date)
 
 
@@ -2173,14 +2222,16 @@ with topbar_right:
         st.session_state.pop("login_user", None)
         st.rerun()
 
-page_options = ["현재 신상품", "과거 신상품 조회"]
-selected_page = st.radio(
-    "메뉴 선택",
-    options=page_options,
-    horizontal=True,
-    key="app_page_selector",
-    label_visibility="collapsed",
-)
+page_options = ["금주 신상품", "과거 신상품 조회"]
+with st.sidebar:
+    st.header("메뉴")
+    selected_page = st.radio(
+        "최상위 탭",
+        options=page_options,
+        key="app_page_selector",
+        label_visibility="collapsed",
+    )
+    st.divider()
 
 min_release = item_master["NP_RLSE_DATE"].min().date()
 max_release = item_master["NP_RLSE_DATE"].max().date()
@@ -2399,6 +2450,7 @@ else:
         fallback_summary=str(selected_weekly_row.get("ITEM_CRTR_SUMMARY", "") or "").strip(),
     )
 
+    st.subheader("상품 소개 + 기본 정보")
     top_left, top_right = st.columns([0.8, 5.2])
     with top_left:
         if st.button("목록으로", width="stretch"):
@@ -2423,6 +2475,10 @@ else:
     selected_profile = build_item_preorder_profile(preorder_df, selected_weekly_item)
     selected_center_profile = build_item_center_preorder_profile(preorder_df, selected_weekly_item)
     detail_analysis, detail_summary = build_item_detail_analysis(analysis_df, selected_weekly_item)
+    if not selected_profile.empty:
+        selected_profile["예약일자 표시"] = selected_profile["예약일자"].apply(format_md_weekday)
+    if not selected_center_profile.empty:
+        selected_center_profile["예약일자 표시"] = selected_center_profile["예약일자"].apply(format_md_weekday)
 
     center_share = selected_center_plan.copy()
     total_reservation_qty = center_share["RESERVATION_QTY"].sum()
@@ -2443,38 +2499,43 @@ else:
     with left:
         fig = px.line(
             selected_profile,
-            x="예약일자",
+            x="예약일자 표시",
             y="예약 수량",
             markers=True,
             title="전체 예약주문 추이",
-            labels={"예약일자": "예약일자", "예약 수량": "예약 수량"},
+            labels={"예약일자 표시": "예약일자", "예약 수량": "예약 수량"},
             color_discrete_sequence=[TABLEAU_COLORS[0]],
+            category_orders={"예약일자 표시": selected_profile["예약일자 표시"].tolist()},
         )
         style_figure(fig)
         st.plotly_chart(fig, use_container_width=True, config={})
 
     with right:
         if center_options:
-            fig = px.bar(
+            fig = px.pie(
                 center_share,
-                x="CENTER_NM",
-                y="센터 비중(%)",
+                names="CENTER_NM",
+                values="RESERVATION_QTY",
                 custom_data=["CENTER_NM", "RESERVATION_QTY", "ORDERING_STORE_CNT"],
                 title="센터별 예약주문 비중",
-                labels={"CENTER_NM": "센터", "센터 비중(%)": "예약 비중(%)"},
-                color="센터 비중(%)",
-                color_continuous_scale=["#d7efe4", "#008061"],
+                hole=0.48,
+                color_discrete_sequence=TABLEAU_COLORS,
             )
             style_figure(fig)
             fig.update_traces(
                 hovertemplate=(
                     "센터=%{customdata[0]}<br>"
-                    "예약 비중=%{y:.1f}%<br>"
+                    "예약 비중=%{percent}<br>"
                     "예약 수량=%{customdata[1]:,.0f}<br>"
                     "예약 점포 수=%{customdata[2]:,.0f}<extra></extra>"
-                )
+                ),
+                textinfo="percent",
+                pull=[
+                    0.06 if center_name == st.session_state.get(center_key, default_center) else 0
+                    for center_name in center_share["CENTER_NM"]
+                ],
             )
-            fig.update_layout(coloraxis_showscale=False)
+            fig.update_layout(showlegend=True)
             center_select_event = st.plotly_chart(
                 fig,
                 use_container_width=True,
@@ -2485,7 +2546,10 @@ else:
 
             selected_points = center_select_event.selection.points if center_select_event else []
             if selected_points:
-                clicked_center_name = selected_points[0].get("x")
+                clicked_center_name = (
+                    selected_points[0].get("label")
+                    or selected_points[0].get("customdata", [None])[0]
+                )
                 if clicked_center_name in center_options:
                     st.session_state[center_key] = clicked_center_name
         else:
@@ -2614,12 +2678,13 @@ else:
             )
             fig = px.line(
                 scoped_center_profile,
-                x="예약일자",
+                x="예약일자 표시",
                 y="예약 수량",
                 markers=True,
                 title="",
-                labels={"예약일자": "예약일자", "예약 수량": "예약 수량"},
+                labels={"예약일자 표시": "예약일자", "예약 수량": "예약 수량"},
                 color_discrete_sequence=[TABLEAU_COLORS[1]],
+                category_orders={"예약일자 표시": scoped_center_profile["예약일자 표시"].tolist()},
             )
             style_figure(fig)
             fig.update_layout(height=420, margin=dict(l=0, r=0, t=10, b=0))
