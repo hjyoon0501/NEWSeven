@@ -1531,6 +1531,18 @@ def build_center_weight_lookup(center_codes: list[str]) -> dict[str, float]:
     return weights
 
 
+def parse_md_editor_numbers(values: pd.Series) -> pd.Series:
+    if pd.api.types.is_numeric_dtype(values):
+        return pd.to_numeric(values, errors="coerce")
+    cleaned = (
+        values.astype(str)
+        .str.replace(",", "", regex=False)
+        .str.replace(" ", "", regex=False)
+        .replace({"": pd.NA, "None": pd.NA, "nan": pd.NA, "<NA>": pd.NA})
+    )
+    return pd.to_numeric(cleaned, errors="coerce")
+
+
 def render_md_order_simulation_tab(
     preorder_df: pd.DataFrame,
     predictions_df: pd.DataFrame,
@@ -1725,7 +1737,7 @@ def render_md_order_simulation_tab(
     live_md_pivot = pd.DataFrame(index=current_pivot.index, columns=center_codes, dtype=float)
     for center_code in center_codes:
         md_col = md_column_by_center[center_code]
-        edited_values = pd.to_numeric(edited_df[md_col], errors="coerce")
+        edited_values = parse_md_editor_numbers(edited_df[md_col])
         edited_values = edited_values.where(edited_values.notna(), fallback_md[center_code].to_numpy())
         live_md_pivot[center_code] = edited_values * unit_divisor
 
