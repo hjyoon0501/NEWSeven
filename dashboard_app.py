@@ -714,15 +714,26 @@ def inject_theme() -> None:
             box-shadow: var(--soft-shadow);
             padding: 0.55rem;
         }
-        div[data-testid="stDataFrame"] [aria-label*="MD 입력"],
-        div[data-testid="stDataFrame"] [title*="MD 입력"],
-        div[data-testid="stDataFrame"] [data-testid*="MD 입력"] {
-            background: #ffeef6 !important;
-        }
         div[data-testid="stDataFrame"] input,
         div[data-testid="stDataFrame"] textarea {
             background: #ffeef6 !important;
             border-color: rgba(244, 114, 182, 0.45) !important;
+        }
+        .md-input-note {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.45rem;
+            margin: 0.1rem 0 0.55rem 0;
+            color: #7f8ba3;
+            font-size: 0.85rem;
+        }
+        .md-input-note span:first-child {
+            display: inline-block;
+            width: 0.9rem;
+            height: 0.9rem;
+            border-radius: 0.25rem;
+            background: #ffeef6;
+            border: 1px solid rgba(244,114,182,0.45);
         }
         h1, h2, h3 {
             color: #161b2d !important;
@@ -1702,7 +1713,7 @@ def render_md_order_simulation_tab(
         editor_df[md_col] = display_md[center_code].values
         column_config[ml_col] = st.column_config.NumberColumn(f"{center_name} 모델", format="%,.0f")
         column_config[md_col] = st.column_config.NumberColumn(
-            f"{center_name} MD 입력",
+            f"MD 입력 | {center_name}",
             min_value=0,
             step=1,
             format="%,.0f",
@@ -1739,12 +1750,7 @@ def render_md_order_simulation_tab(
 
     st.caption("센터마다 모델 산출값(ML)은 잠금 열로 두고, MD 열만 편집합니다. 편집 버튼을 누른 뒤 수정하고 적용하면 신호 매트릭스가 갱신됩니다.")
     st.markdown(
-        """
-        <div style="display:inline-flex;align-items:center;gap:0.45rem;margin:0.1rem 0 0.55rem 0;color:#7f8ba3;font-size:0.85rem;">
-            <span style="display:inline-block;width:0.9rem;height:0.9rem;border-radius:0.25rem;background:#ffeef6;border:1px solid rgba(244,114,182,0.45);"></span>
-            <span>MD 입력 컬럼</span>
-        </div>
-        """,
+        '<div class="md-input-note"><span></span><span>MD 입력 컬럼</span></div>',
         unsafe_allow_html=True,
     )
     is_editing = st.session_state.get(edit_key, False)
