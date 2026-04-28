@@ -3472,7 +3472,7 @@ def render_past_simple_lookup(
         st.dataframe(
             cat_agg.set_index(agg_level),
             use_container_width=True,
-            height=320,
+            height=390,
             column_config={
                 "총 초도발주량": st.column_config.NumberColumn(format="%,.0f"),
                 "총 초기예약발주": st.column_config.NumberColumn(format="%,.0f"),
@@ -3533,7 +3533,8 @@ def render_past_simple_lookup(
                 )
             fig_s.update_layout(
                 barmode="stack", height=340,
-                margin=dict(l=0, r=0, t=20, b=60),
+                title=f"{agg_level}별 출고율 상태 현황",
+                margin=dict(l=0, r=0, t=52, b=60),
                 plot_bgcolor="white", paper_bgcolor="white",
                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
                 font_size=11,
@@ -3597,7 +3598,8 @@ def render_past_simple_lookup(
                     )
                 )
             fig_sc.update_layout(
-                margin=dict(l=0, r=0, t=20, b=20),
+                title="상품별 OPTIMAL(OUTFLOW_7D) vs MD 초도발주량",
+                margin=dict(l=0, r=0, t=52, b=20),
                 plot_bgcolor="white", paper_bgcolor="white",
                 font_size=11,
                 annotations=[
@@ -4019,7 +4021,7 @@ def render_past_status_analysis_tab(
         총실출고량=("실출고량", "sum"),
         총실수요=("실수요", "sum"),
     ).reset_index().rename(columns={agg_col: agg_level})
-    st.dataframe(cat_agg, use_container_width=True, height=260, hide_index=True)
+    st.dataframe(cat_agg, use_container_width=True, height=330, hide_index=True)
 
     status_counts = filtered.groupby([agg_col, "상태"]).size().reset_index(name="상품수")
     fig_status = px.bar(
@@ -4029,6 +4031,7 @@ def render_past_status_analysis_tab(
         color="상태",
         category_orders={"상태": OUTFLOW_STATUS_ORDER},
         color_discrete_map=OUTFLOW_STATUS_COLORS,
+        title=f"{agg_level}별 출고율 상태 현황",
         height=340,
     )
     style_figure(fig_status)
@@ -4054,6 +4057,7 @@ def render_past_status_analysis_tab(
         color_discrete_map=OUTFLOW_STATUS_COLORS,
         hover_name="ITEM_NM",
         labels={"OUTFLOW_7D": "OPTIMAL = OUTFLOW_7D (log)", "INITIAL_ORD_QTY": "MD 초도발주량 (log)"},
+        title="상품별 OPTIMAL(OUTFLOW_7D) vs MD 초도발주량",
         height=420,
     )
     min_axis = max(1, min(scatter_df["OUTFLOW_7D"].min(), scatter_df["INITIAL_ORD_QTY"].min()))
