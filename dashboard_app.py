@@ -761,22 +761,47 @@ def inject_theme() -> None:
             border: 0 !important;
         }
         section[data-testid="stSidebar"] div[data-testid="stButton"] button {
-            min-height: 2rem !important;
-            padding: 0.25rem 0.6rem !important;
+            min-height: 1.9rem !important;
+            padding: 0.2rem 0.85rem !important;
             border-radius: 999px !important;
             font-size: 0.74rem !important;
             font-weight: 800 !important;
             box-shadow: 0 6px 14px rgba(40, 51, 86, 0.07) !important;
+            white-space: nowrap !important;
         }
-        div[role="radiogroup"] {
-            gap: 0.35rem;
+        section[data-testid="stSidebar"] div[role="radiogroup"] {
+            gap: 0.55rem;
+            width: 100%;
         }
-        div[role="radiogroup"] label {
+        section[data-testid="stSidebar"] div[role="radiogroup"] label {
             background: rgba(255,255,255,0.76);
             border: 1px solid rgba(231, 235, 247, 0.95);
-            border-radius: 14px;
-            padding: 0.45rem 0.65rem;
-            margin-bottom: 0.25rem;
+            border-radius: 16px;
+            box-shadow: 0 7px 18px rgba(40, 51, 86, 0.04);
+            display: flex !important;
+            align-items: center !important;
+            min-height: 2.8rem;
+            margin-bottom: 0 !important;
+            padding: 0.48rem 0.95rem !important;
+            width: 100% !important;
+        }
+        section[data-testid="stSidebar"] div[role="radiogroup"] label > div:first-child {
+            display: none !important;
+        }
+        section[data-testid="stSidebar"] div[role="radiogroup"] label p {
+            color: #8995aa !important;
+            font-size: 0.96rem !important;
+            font-weight: 800 !important;
+            line-height: 1.15 !important;
+            white-space: nowrap !important;
+        }
+        section[data-testid="stSidebar"] div[role="radiogroup"] label:has(input:checked) {
+            background: linear-gradient(135deg, rgba(222, 244, 255, 0.98), rgba(235, 225, 255, 0.98)) !important;
+            border-color: rgba(147, 173, 255, 0.72) !important;
+            box-shadow: 0 10px 24px rgba(121, 145, 240, 0.16) !important;
+        }
+        section[data-testid="stSidebar"] div[role="radiogroup"] label:has(input:checked) p {
+            color: #5169d7 !important;
         }
         .js-plotly-plot .plotly .gridlayer path {
             stroke: rgba(218, 225, 240, 0.72) !important;
@@ -3712,7 +3737,7 @@ st.caption(f"접속 사용자: `{st.session_state.get('login_user', 'unknown')}`
 
 page_options = ["금주 신상품", "과거 신상품 조회", "MD 발주 시뮬레이션", "재고비용 시뮬레이션"]
 with st.sidebar:
-    logout_left, logout_right = st.columns([1, 0.42])
+    logout_left, logout_right = st.columns([1, 0.72])
     with logout_right:
         if st.button("로그아웃", key="sidebar_logout_button", help="로그아웃", width="stretch"):
             st.session_state["is_logged_in"] = False
