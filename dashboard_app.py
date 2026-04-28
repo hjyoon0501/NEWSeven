@@ -760,6 +760,14 @@ def inject_theme() -> None:
             color: #ffffff !important;
             border: 0 !important;
         }
+        section[data-testid="stSidebar"] div[data-testid="stButton"] button {
+            min-height: 2rem !important;
+            padding: 0.25rem 0.6rem !important;
+            border-radius: 999px !important;
+            font-size: 0.74rem !important;
+            font-weight: 800 !important;
+            box-shadow: 0 6px 14px rgba(40, 51, 86, 0.07) !important;
+        }
         div[role="radiogroup"] {
             gap: 0.35rem;
         }
@@ -3699,19 +3707,18 @@ if item_master.empty:
         st.rerun()
     st.stop()
 
-topbar_left, topbar_right = st.columns([1, 0.35])
-with topbar_left:
-    role_label = "MASTER" if is_master_user else "MD"
-    st.caption(f"접속 사용자: `{st.session_state.get('login_user', 'unknown')}` | 권한: `{role_label}`")
-with topbar_right:
-    if st.button("로그아웃", width="stretch"):
-        st.session_state["is_logged_in"] = False
-        st.session_state["is_master_user"] = False
-        st.session_state.pop("login_user", None)
-        st.rerun()
+role_label = "MASTER" if is_master_user else "MD"
+st.caption(f"접속 사용자: `{st.session_state.get('login_user', 'unknown')}` | 권한: `{role_label}`")
 
 page_options = ["금주 신상품", "과거 신상품 조회", "MD 발주 시뮬레이션", "재고비용 시뮬레이션"]
 with st.sidebar:
+    logout_left, logout_right = st.columns([1, 0.42])
+    with logout_right:
+        if st.button("로그아웃", key="sidebar_logout_button", help="로그아웃", width="stretch"):
+            st.session_state["is_logged_in"] = False
+            st.session_state["is_master_user"] = False
+            st.session_state.pop("login_user", None)
+            st.rerun()
     st.header("메뉴")
     selected_page = st.radio(
         "최상위 탭",
