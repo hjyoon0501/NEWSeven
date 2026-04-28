@@ -1739,7 +1739,7 @@ def render_md_order_simulation_tab(
         md_col = md_column_by_center[center_code]
         edited_values = parse_md_editor_numbers(edited_df[md_col])
         edited_values = edited_values.where(edited_values.notna(), fallback_md[center_code].to_numpy())
-        live_md_pivot[center_code] = edited_values * unit_divisor
+        live_md_pivot[center_code] = (edited_values * unit_divisor).to_numpy()
 
     if apply_clicked:
         st.session_state[state_key] = live_md_pivot.copy()
