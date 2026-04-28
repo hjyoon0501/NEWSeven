@@ -1837,19 +1837,16 @@ def build_inventory_cost_dataset(
 
         return series.rolling(window=window, min_periods=1).apply(_wa, raw=True)
 
-    grouped = cost_df.groupby(["ITEM_CODE", "CENTER_NM"], group_keys=False)
+    sale_for_velocity = cost_df["DAILY_OUTBOUND_QTY"].where(cost_df["BOOK_END_QTY"] > 0)
+    sale_for_velocity = sale_for_velocity.groupby([cost_df["ITEM_CODE"], cost_df["CENTER_NM"]]).ffill()
     cost_df["SALE_VEL_3D"] = (
-        grouped[["DAILY_OUTBOUND_QTY", "BOOK_END_QTY"]]
-        .apply(lambda df: _weighted_avg(df["DAILY_OUTBOUND_QTY"].where(df["BOOK_END_QTY"] > 0).ffill(), window=3))
-        .reset_index(level=[0, 1], drop=True)
-        .reindex(cost_df.index)
+        sale_for_velocity.groupby([cost_df["ITEM_CODE"], cost_df["CENTER_NM"]])
+        .transform(lambda series: _weighted_avg(series, window=3))
         .fillna(0)
     )
     cost_df["SALE_VEL_7D"] = (
-        grouped[["DAILY_OUTBOUND_QTY", "BOOK_END_QTY"]]
-        .apply(lambda df: _weighted_avg(df["DAILY_OUTBOUND_QTY"].where(df["BOOK_END_QTY"] > 0).ffill(), window=7))
-        .reset_index(level=[0, 1], drop=True)
-        .reindex(cost_df.index)
+        sale_for_velocity.groupby([cost_df["ITEM_CODE"], cost_df["CENTER_NM"]])
+        .transform(lambda series: _weighted_avg(series, window=7))
         .fillna(0)
     )
     cost_df["SALE_ACCEL"] = cost_df["SALE_VEL_3D"] - cost_df["SALE_VEL_7D"]
