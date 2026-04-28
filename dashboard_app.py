@@ -1561,12 +1561,25 @@ def render_md_order_simulation_tab(
     base["CENTER_NM"] = base["CENTER_NM"].fillna(base["CENTER_CODE"])
 
     base["출시일"] = pd.to_datetime(base["NP_RLSE_DATE"], errors="coerce").dt.date
-    release_dates = sorted([date_value for date_value in base["출시일"].dropna().unique().tolist()])
+    available_release_dates = base["출시일"].dropna().unique().tolist()
+    if not available_release_dates:
+        st.info("출시일 정보가 없어 시뮬레이션 대상을 선택할 수 없습니다.")
+        return
+    latest_year = max(date_value.year for date_value in available_release_dates)
+    max_release_date = pd.Timestamp(year=latest_year, month=12, day=31).date()
+    release_dates = sorted(
+        [
+            date_value
+            for date_value in available_release_dates
+            if date_value <= max_release_date
+        ],
+        reverse=True,
+    )
     if not release_dates:
         st.info("출시일 정보가 없어 시뮬레이션 대상을 선택할 수 없습니다.")
         return
 
-    default_dates = release_dates[-1:]
+    default_dates = release_dates[:1]
     selected_dates = st.multiselect(
         "출시일 선택",
         options=release_dates,
@@ -1645,9 +1658,10 @@ def render_md_order_simulation_tab(
         or list(stored_md.columns) != list(current_pivot.columns)
     ):
         st.session_state[state_key] = default_md.copy()
+    current_md = st.session_state[state_key].reindex_like(current_pivot).fillna(default_md)
 
     display_ml = (ml_pivot / unit_divisor).round(0).astype(int)
-    display_md = (st.session_state[state_key].reindex_like(current_pivot).fillna(0) / unit_divisor).round(0).astype(int)
+    display_md = (current_md / unit_divisor).round(0).astype(int)
 
     editor_df = pd.DataFrame()
     editor_df["상품"] = [
@@ -1707,10 +1721,13 @@ def render_md_order_simulation_tab(
         key=f"md_sim_matrix_editor_{signature}_{'edit' if is_editing else 'view'}",
     )
 
+    fallback_md = (current_md / unit_divisor).round(0)
     live_md_pivot = pd.DataFrame(index=current_pivot.index, columns=center_codes, dtype=float)
     for center_code in center_codes:
         md_col = md_column_by_center[center_code]
-        live_md_pivot[center_code] = pd.to_numeric(edited_df[md_col], errors="coerce").fillna(0) * unit_divisor
+        edited_values = pd.to_numeric(edited_df[md_col], errors="coerce")
+        edited_values = edited_values.where(edited_values.notna(), fallback_md[center_code].to_numpy())
+        live_md_pivot[center_code] = edited_values * unit_divisor
 
     if apply_clicked:
         st.session_state[state_key] = live_md_pivot.copy()
