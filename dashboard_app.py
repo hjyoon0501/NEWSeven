@@ -785,10 +785,9 @@ def inject_theme() -> None:
         div[data-testid="stSlider"] [data-baseweb="slider"] div[style*="background"] {
             background-color: #8f92ff !important;
         }
-        div[role="radiogroup"] input:checked + div,
-        div[role="radiogroup"] label:has(input:checked) > div:first-child {
-            border-color: #8f92ff !important;
-            background: #8f92ff !important;
+        div[role="radiogroup"] label p,
+        div[role="radiogroup"] label span {
+            background: transparent !important;
         }
         div[role="radiogroup"] label:has(input:checked) svg,
         div[role="radiogroup"] label:has(input:checked) path {
