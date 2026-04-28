@@ -1603,6 +1603,325 @@ def render_md_order_simulation_tab(
     st.dataframe(styled_signal, use_container_width=True, height=360, hide_index=True)
 
 
+def build_inventory_cost_dataset(
+    stock_df: pd.DataFrame,
+    sales_df: pd.DataFrame,
+    center_order_df: pd.DataFrame,
+    preorder_df: pd.DataFrame,
+    pallet_daily_cost: float,
+    pallet_unit_qty: float,
+    box_handling_cost: float,
+    box_unit_qty: float,
+    annual_interest_rate: float,
+) -> pd.DataFrame:
+    if stock_df.empty:
+        return pd.DataFrame()
+
+    item_meta = (
+        preorder_df[
+            ["ITEM_CODE", "ITEM_NM", "BRAND", "ITEM_MDDV_NM", "ITEM_SMDV_NM", "ST_CPM_AMT", "ST_SLEM_AMT"]
+        ]
+        .drop_duplicates("ITEM_CODE")
+    )
+    center_meta = (
+        preorder_df[["CENTER_CODE", "CENTER_NM"]]
+        .drop_duplicates("CENTER_CODE")
+        .assign(CENTER_CODE=lambda df: df["CENTER_CODE"].map(normalize_center_code))
+    )
+
+    cost_df = stock_df.copy()
+    cost_df["CENTER_CODE"] = cost_df["CENTER_CODE"].map(normalize_center_code)
+    cost_df = cost_df.merge(item_meta, on="ITEM_CODE", how="left").merge(center_meta, on="CENTER_CODE", how="left")
+    cost_df["CENTER_NM"] = cost_df["CENTER_NM"].fillna(cost_df["CENTER_CODE"])
+    cost_df["ST_CPM_AMT"] = pd.to_numeric(cost_df["ST_CPM_AMT"], errors="coerce").fillna(0)
+    cost_df["ST_SLEM_AMT"] = pd.to_numeric(cost_df["ST_SLEM_AMT"], errors="coerce").fillna(0)
+
+    if not sales_df.empty:
+        daily_sales = (
+            sales_df.groupby(["SALE_DATE", "ITEM_CODE", "CENTER_NM"], as_index=False)["CENTER_SALE_QTY"]
+            .sum()
+            .rename(columns={"SALE_DATE": "BIZ_DT", "CENTER_SALE_QTY": "DAILY_OUTBOUND_QTY"})
+        )
+        cost_df = cost_df.merge(daily_sales, on=["BIZ_DT", "ITEM_CODE", "CENTER_NM"], how="left")
+    else:
+        cost_df["DAILY_OUTBOUND_QTY"] = 0
+
+    if not center_order_df.empty and {"ORD_DATE", "ITEM_CODE", "CENTER_CODE", "CONV_QTY"}.issubset(center_order_df.columns):
+        daily_orders = (
+            center_order_df.groupby(["ORD_DATE", "ITEM_CODE", "CENTER_CODE"], as_index=False)["CONV_QTY"]
+            .sum()
+            .rename(columns={"ORD_DATE": "BIZ_DT", "CONV_QTY": "DAILY_INBOUND_QTY"})
+        )
+        daily_orders["CENTER_CODE"] = daily_orders["CENTER_CODE"].map(normalize_center_code)
+        cost_df = cost_df.merge(daily_orders, on=["BIZ_DT", "ITEM_CODE", "CENTER_CODE"], how="left")
+    else:
+        cost_df["DAILY_INBOUND_QTY"] = 0
+
+    for col in ["DAILY_OUTBOUND_QTY", "DAILY_INBOUND_QTY", "BOOK_END_QTY"]:
+        cost_df[col] = pd.to_numeric(cost_df[col], errors="coerce").fillna(0)
+
+    safe_pallet_qty = max(float(pallet_unit_qty), 1.0)
+    safe_box_qty = max(float(box_unit_qty), 1.0)
+    daily_rate = float(annual_interest_rate) / 365
+
+    cost_df["PALLET_COUNT"] = np.ceil(cost_df["BOOK_END_QTY"].clip(lower=0) / safe_pallet_qty)
+    cost_df["STORAGE_COST"] = cost_df["PALLET_COUNT"] * pallet_daily_cost
+    cost_df["OUTBOUND_BOX_COUNT"] = np.ceil(cost_df["DAILY_OUTBOUND_QTY"].clip(lower=0) / safe_box_qty)
+    cost_df["INBOUND_BOX_COUNT"] = np.ceil(cost_df["DAILY_INBOUND_QTY"].clip(lower=0) / safe_box_qty)
+    cost_df["OUTBOUND_HANDLING_COST"] = cost_df["OUTBOUND_BOX_COUNT"] * box_handling_cost
+    cost_df["INBOUND_HANDLING_COST"] = cost_df["INBOUND_BOX_COUNT"] * box_handling_cost
+    cost_df["INVENTORY_VALUE"] = cost_df["BOOK_END_QTY"] * cost_df["ST_CPM_AMT"]
+    cost_df["CAPITAL_COST"] = cost_df["INVENTORY_VALUE"] * daily_rate
+    cost_df["TOTAL_HANDLING_COST"] = cost_df["OUTBOUND_HANDLING_COST"] + cost_df["INBOUND_HANDLING_COST"]
+    cost_df["DAILY_TOTAL_COST"] = cost_df["STORAGE_COST"] + cost_df["TOTAL_HANDLING_COST"] + cost_df["CAPITAL_COST"]
+    return cost_df
+
+
+def render_inventory_cost_page(
+    stock_df: pd.DataFrame,
+    sales_df: pd.DataFrame,
+    center_order_df: pd.DataFrame,
+    preorder_df: pd.DataFrame,
+) -> None:
+    st.markdown("## 재고비용 시뮬레이션")
+    st.caption("보관비, 입출고 하역비, 자본비용 가정을 움직이면서 센터/상품별 재고비용 변화를 확인합니다.")
+
+    if stock_df.empty:
+        st.info("재고비용을 계산할 재고 데이터가 없습니다.")
+        return
+
+    min_date = stock_df["BIZ_DT"].min().date()
+    max_date = stock_df["BIZ_DT"].max().date()
+
+    with st.sidebar:
+        st.header("재고비용 조건")
+        date_range = st.date_input(
+            "분석 기간",
+            value=(min_date, max_date),
+            min_value=min_date,
+            max_value=max_date,
+            key="inventory_cost_date_range",
+        )
+        if isinstance(date_range, tuple) and len(date_range) == 2:
+            start_date, end_date = date_range
+        else:
+            start_date, end_date = min_date, max_date
+
+        center_options = sorted(preorder_df["CENTER_NM"].dropna().astype(str).unique().tolist())
+        selected_centers = st.multiselect(
+            "센터",
+            options=center_options,
+            default=[],
+            help="비워두면 전체 센터를 봅니다.",
+            key="inventory_cost_centers",
+        )
+        mddv_options = sorted(preorder_df["ITEM_MDDV_NM"].dropna().astype(str).unique().tolist())
+        selected_mddv = st.multiselect(
+            "중분류",
+            options=mddv_options,
+            default=[],
+            help="비워두면 전체 중분류를 봅니다.",
+            key="inventory_cost_mddv",
+        )
+        st.divider()
+        pallet_daily_cost = st.slider("팔레트당 일 보관비", 100, 3000, 800, 50, key="inventory_cost_pallet_cost")
+        pallet_unit_qty = st.slider("팔레트 적재 EA", 10, 1000, 120, 10, key="inventory_cost_pallet_qty")
+        box_handling_cost = st.slider("박스당 하역비", 50, 2000, 500, 50, key="inventory_cost_box_cost")
+        box_unit_qty = st.slider("박스 입수 EA", 1, 200, 20, 1, key="inventory_cost_box_qty")
+        annual_interest_rate = st.slider("연 자본비용 이율 (%)", 0.0, 20.0, 5.0, 0.5, key="inventory_cost_rate") / 100
+
+    cost_df = build_inventory_cost_dataset(
+        stock_df,
+        sales_df,
+        center_order_df,
+        preorder_df,
+        pallet_daily_cost,
+        pallet_unit_qty,
+        box_handling_cost,
+        box_unit_qty,
+        annual_interest_rate,
+    )
+
+    filtered = cost_df[
+        (cost_df["BIZ_DT"].dt.date >= start_date)
+        & (cost_df["BIZ_DT"].dt.date <= end_date)
+    ].copy()
+    if selected_centers:
+        filtered = filtered[filtered["CENTER_NM"].isin(selected_centers)]
+    if selected_mddv:
+        filtered = filtered[filtered["ITEM_MDDV_NM"].isin(selected_mddv)]
+
+    if filtered.empty:
+        st.info("선택한 조건에 맞는 재고비용 데이터가 없습니다.")
+        return
+
+    total_storage = filtered["STORAGE_COST"].sum()
+    total_handling = filtered["TOTAL_HANDLING_COST"].sum()
+    total_capital = filtered["CAPITAL_COST"].sum()
+    total_cost = filtered["DAILY_TOTAL_COST"].sum()
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("총 보관비", format_won(total_storage))
+    c2.metric("총 하역비", format_won(total_handling))
+    c3.metric("총 자본비용", format_won(total_capital))
+    c4.metric("총 재고비용", format_won(total_cost))
+
+    tab1, tab2, tab3 = st.tabs(["비용 추이", "센터/상품 분석", "상세 데이터"])
+
+    with tab1:
+        daily_cost = (
+            filtered.groupby("BIZ_DT", as_index=False)[
+                ["STORAGE_COST", "TOTAL_HANDLING_COST", "CAPITAL_COST", "DAILY_TOTAL_COST"]
+            ]
+            .sum()
+            .sort_values("BIZ_DT")
+        )
+        fig = px.line(
+            daily_cost,
+            x="BIZ_DT",
+            y=["STORAGE_COST", "TOTAL_HANDLING_COST", "CAPITAL_COST", "DAILY_TOTAL_COST"],
+            labels={"BIZ_DT": "일자", "value": "비용", "variable": "비용 항목"},
+            color_discrete_sequence=["#6EC6E8", "#8DD7A5", "#F8C77E", "#7B61FF"],
+            height=420,
+        )
+        fig.for_each_trace(
+            lambda trace: trace.update(
+                name={
+                    "STORAGE_COST": "보관비",
+                    "TOTAL_HANDLING_COST": "하역비",
+                    "CAPITAL_COST": "자본비용",
+                    "DAILY_TOTAL_COST": "총 재고비용",
+                }.get(trace.name, trace.name)
+            )
+        )
+        style_figure(fig)
+        fig.update_layout(hovermode="x unified")
+        st.plotly_chart(fig, use_container_width=True)
+
+        pie_data = pd.DataFrame(
+            {
+                "비용 항목": ["보관비", "하역비", "자본비용"],
+                "금액": [total_storage, total_handling, total_capital],
+            }
+        )
+        left, right = st.columns(2)
+        with left:
+            fig_pie = px.pie(
+                pie_data,
+                values="금액",
+                names="비용 항목",
+                color_discrete_sequence=["#BFE7F5", "#CBEFD6", "#FFE0A8"],
+                hole=0.55,
+                height=340,
+            )
+            style_figure(fig_pie)
+            st.plotly_chart(fig_pie, use_container_width=True)
+        with right:
+            sensitivity = []
+            for rate in [0.8, 1.0, 1.2]:
+                sensitivity.append(
+                    {
+                        "시나리오": f"보관/하역 단가 {rate:.0%}",
+                        "총 비용": total_storage * rate + total_handling * rate + total_capital,
+                    }
+                )
+            fig_s = px.bar(
+                pd.DataFrame(sensitivity),
+                x="시나리오",
+                y="총 비용",
+                color="시나리오",
+                color_discrete_sequence=["#DCEBFF", "#BFE7F5", "#F8D7DA"],
+                height=340,
+            )
+            style_figure(fig_s)
+            fig_s.update_layout(showlegend=False)
+            st.plotly_chart(fig_s, use_container_width=True)
+
+    with tab2:
+        center_cost = (
+            filtered.groupby("CENTER_NM", as_index=False)["DAILY_TOTAL_COST"]
+            .sum()
+            .sort_values("DAILY_TOTAL_COST", ascending=False)
+        )
+        item_cost = (
+            filtered.groupby(["ITEM_CODE", "ITEM_NM", "ITEM_MDDV_NM", "ITEM_SMDV_NM"], as_index=False)[
+                ["BOOK_END_QTY", "DAILY_TOTAL_COST", "INVENTORY_VALUE"]
+            ]
+            .sum()
+            .sort_values("DAILY_TOTAL_COST", ascending=False)
+            .head(50)
+        )
+        left, right = st.columns([1, 1.2], gap="large")
+        with left:
+            fig_center = px.bar(
+                center_cost.head(20),
+                x="CENTER_NM",
+                y="DAILY_TOTAL_COST",
+                labels={"CENTER_NM": "센터", "DAILY_TOTAL_COST": "총 재고비용"},
+                color_discrete_sequence=["#7B61FF"],
+                height=420,
+            )
+            style_figure(fig_center)
+            fig_center.update_xaxes(tickangle=-35)
+            st.plotly_chart(fig_center, use_container_width=True)
+        with right:
+            st.dataframe(
+                item_cost.rename(
+                    columns={
+                        "ITEM_CODE": "상품코드",
+                        "ITEM_NM": "상품명",
+                        "ITEM_MDDV_NM": "중분류",
+                        "ITEM_SMDV_NM": "소분류",
+                        "BOOK_END_QTY": "누적 기말재고",
+                        "DAILY_TOTAL_COST": "총 재고비용",
+                        "INVENTORY_VALUE": "재고금액",
+                    }
+                ),
+                use_container_width=True,
+                height=420,
+                hide_index=True,
+            )
+
+    with tab3:
+        detail_cols = [
+            "BIZ_DT",
+            "CENTER_NM",
+            "ITEM_CODE",
+            "ITEM_NM",
+            "BOOK_END_QTY",
+            "DAILY_OUTBOUND_QTY",
+            "DAILY_INBOUND_QTY",
+            "STORAGE_COST",
+            "TOTAL_HANDLING_COST",
+            "CAPITAL_COST",
+            "DAILY_TOTAL_COST",
+        ]
+        detail = filtered[[col for col in detail_cols if col in filtered.columns]].copy()
+        detail = detail.rename(
+            columns={
+                "BIZ_DT": "일자",
+                "CENTER_NM": "센터",
+                "ITEM_CODE": "상품코드",
+                "ITEM_NM": "상품명",
+                "BOOK_END_QTY": "기말재고",
+                "DAILY_OUTBOUND_QTY": "출고수량",
+                "DAILY_INBOUND_QTY": "입고수량",
+                "STORAGE_COST": "보관비",
+                "TOTAL_HANDLING_COST": "하역비",
+                "CAPITAL_COST": "자본비용",
+                "DAILY_TOTAL_COST": "총 재고비용",
+            }
+        )
+        st.dataframe(detail, use_container_width=True, height=460, hide_index=True)
+        st.download_button(
+            "상세 데이터 CSV 다운로드",
+            data=detail.to_csv(index=False).encode("utf-8-sig"),
+            file_name="inventory_cost_detail.csv",
+            mime="text/csv",
+            width="stretch",
+        )
+
+
 @st.cache_data(show_spinner=False)
 def load_center_locations() -> pd.DataFrame:
     if not CENTER_MAP_PATH.exists():
@@ -2909,7 +3228,7 @@ with topbar_right:
         st.session_state.pop("login_user", None)
         st.rerun()
 
-page_options = ["금주 신상품", "과거 신상품 조회", "MD 발주 시뮬레이션"]
+page_options = ["금주 신상품", "과거 신상품 조회", "MD 발주 시뮬레이션", "재고비용 시뮬레이션"]
 with st.sidebar:
     st.header("메뉴")
     selected_page = st.radio(
@@ -2975,6 +3294,15 @@ if selected_page == "MD 발주 시뮬레이션":
                 st.warning(f"{label}: 없음")
 
     render_md_order_simulation_tab(full_preorder_df, full_predictions_df)
+    st.stop()
+
+if selected_page == "재고비용 시뮬레이션":
+    render_inventory_cost_page(
+        full_stock_df,
+        full_sales_df,
+        full_center_order_df,
+        full_preorder_df,
+    )
     st.stop()
 
 st.markdown(
