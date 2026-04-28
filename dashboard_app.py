@@ -837,9 +837,9 @@ def inject_theme() -> None:
         }
         div[data-testid="stFormSubmitButton"] button,
         div[data-testid="stButton"] button[kind="primary"] {
-            background: linear-gradient(135deg, #4f6df5, #35c8e8) !important;
-            color: #ffffff !important;
-            border: 0 !important;
+            background: linear-gradient(135deg, #dce8ff, #c9f1fb) !important;
+            color: #5169d7 !important;
+            border: 1px solid rgba(147, 173, 255, 0.52) !important;
         }
         section[data-testid="stSidebar"] div[data-testid="stButton"] button {
             min-height: 1.9rem !important;
