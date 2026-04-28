@@ -1766,7 +1766,7 @@ def render_inventory_cost_page(
     c3.metric("총 자본비용", format_won(total_capital))
     c4.metric("총 재고비용", format_won(total_cost))
 
-    tab1, tab2, tab3 = st.tabs(["비용 추이", "센터/상품 분석", "상세 데이터"])
+    tab1, tab2, tab3, tab4 = st.tabs(["비용 추이", "판매 vs 재고", "부진재고", "상세 데이터"])
 
     with tab1:
         daily_cost = (
@@ -1883,6 +1883,118 @@ def render_inventory_cost_page(
             )
 
     with tab3:
+        latest_date = filtered["BIZ_DT"].max()
+        latest_stock = (
+            filtered[filtered["BIZ_DT"] == latest_date]
+            .groupby(["ITEM_CODE", "ITEM_NM", "ITEM_MDDV_NM", "ITEM_SMDV_NM"], as_index=False)
+            .agg(
+                현재재고=("BOOK_END_QTY", "sum"),
+                재고금액=("INVENTORY_VALUE", "sum"),
+                일재고비용=("DAILY_TOTAL_COST", "sum"),
+            )
+        )
+        velocity = (
+            filtered.groupby(["ITEM_CODE"], as_index=False)["DAILY_OUTBOUND_QTY"]
+            .sum()
+            .rename(columns={"DAILY_OUTBOUND_QTY": "기간출고량"})
+        )
+        days_count = max((pd.Timestamp(end_date) - pd.Timestamp(start_date)).days + 1, 1)
+        stagnant = latest_stock.merge(velocity, on="ITEM_CODE", how="left")
+        stagnant["기간출고량"] = stagnant["기간출고량"].fillna(0)
+        stagnant["일평균출고량"] = stagnant["기간출고량"] / days_count
+        stagnant["재고소진예상일"] = np.where(
+            stagnant["일평균출고량"] > 0,
+            stagnant["현재재고"] / stagnant["일평균출고량"],
+            np.inf,
+        )
+        stagnant["재고상태"] = np.select(
+            [
+                stagnant["현재재고"] <= 0,
+                stagnant["재고소진예상일"] >= 60,
+                stagnant["재고소진예상일"] >= 30,
+            ],
+            ["재고 없음", "부진재고", "주의"],
+            default="정상",
+        )
+        stagnant["재고소진예상일"] = stagnant["재고소진예상일"].replace(np.inf, np.nan)
+
+        s1, s2, s3, s4 = st.columns(4)
+        s1.metric("현재 재고 상품", f"{(stagnant['현재재고'] > 0).sum():,}")
+        s2.metric("부진재고 상품", f"{(stagnant['재고상태'] == '부진재고').sum():,}")
+        s3.metric("주의 상품", f"{(stagnant['재고상태'] == '주의').sum():,}")
+        s4.metric("부진재고 금액", format_won(stagnant.loc[stagnant["재고상태"] == "부진재고", "재고금액"].sum()))
+
+        status_order = ["부진재고", "주의", "정상", "재고 없음"]
+        status_color = {
+            "부진재고": "#F8C7D0",
+            "주의": "#FFE7A8",
+            "정상": "#CDEFD8",
+            "재고 없음": "#E5EAF2",
+        }
+        status_summary = (
+            stagnant.groupby("재고상태", as_index=False)
+            .agg(상품수=("ITEM_CODE", "count"), 재고금액=("재고금액", "sum"), 일재고비용=("일재고비용", "sum"))
+        )
+        left, right = st.columns([1, 1.2], gap="large")
+        with left:
+            fig_status = px.bar(
+                status_summary,
+                x="재고상태",
+                y="상품수",
+                color="재고상태",
+                category_orders={"재고상태": status_order},
+                color_discrete_map=status_color,
+                height=360,
+            )
+            style_figure(fig_status)
+            fig_status.update_layout(showlegend=False)
+            st.plotly_chart(fig_status, use_container_width=True)
+        with right:
+            fig_scatter = px.scatter(
+                stagnant[stagnant["현재재고"] > 0],
+                x="일평균출고량",
+                y="현재재고",
+                color="재고상태",
+                size="재고금액",
+                hover_name="ITEM_NM",
+                color_discrete_map=status_color,
+                category_orders={"재고상태": status_order},
+                labels={"일평균출고량": "일평균 출고량", "현재재고": "현재 재고"},
+                height=360,
+            )
+            style_figure(fig_scatter)
+            st.plotly_chart(fig_scatter, use_container_width=True)
+
+        stagnant_view = stagnant.sort_values(["재고상태", "재고금액"], ascending=[True, False]).rename(
+            columns={
+                "ITEM_CODE": "상품코드",
+                "ITEM_NM": "상품명",
+                "ITEM_MDDV_NM": "중분류",
+                "ITEM_SMDV_NM": "소분류",
+            }
+        )
+        st.dataframe(
+            stagnant_view[
+                [
+                    "상품코드",
+                    "상품명",
+                    "중분류",
+                    "소분류",
+                    "현재재고",
+                    "기간출고량",
+                    "일평균출고량",
+                    "재고소진예상일",
+                    "재고금액",
+                    "일재고비용",
+                    "재고상태",
+                ]
+            ],
+            use_container_width=True,
+            height=360,
+            hide_index=True,
+        )
+
+    with tab4:
         detail_cols = [
             "BIZ_DT",
             "CENTER_NM",
