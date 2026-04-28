@@ -2139,6 +2139,7 @@ def render_inventory_cost_page(
             y=["STORAGE_COST", "TOTAL_HANDLING_COST", "CAPITAL_COST", "DAILY_TOTAL_COST"],
             labels={"BIZ_DT": "일자", "value": "비용", "variable": "비용 항목"},
             color_discrete_sequence=["#6EC6E8", "#8DD7A5", "#F8C77E", "#7B61FF"],
+            title="일자별 재고비용 추이",
             height=420,
         )
         fig.for_each_trace(
@@ -2168,6 +2169,7 @@ def render_inventory_cost_page(
                 values="금액",
                 names="비용 항목",
                 color_discrete_sequence=["#BFE7F5", "#CBEFD6", "#FFE0A8"],
+                title="비용 항목별 비중",
                 hole=0.55,
                 height=340,
             )
@@ -2188,6 +2190,7 @@ def render_inventory_cost_page(
                 y="총 비용",
                 color="시나리오",
                 color_discrete_sequence=["#DCEBFF", "#BFE7F5", "#F8D7DA"],
+                title="보관비 조건별 총 비용",
                 height=340,
             )
             style_figure(fig_s)
@@ -2216,6 +2219,7 @@ def render_inventory_cost_page(
                 y="DAILY_TOTAL_COST",
                 labels={"CENTER_NM": "센터", "DAILY_TOTAL_COST": "총 재고비용"},
                 color_discrete_sequence=["#7B61FF"],
+                title="센터별 총 재고비용 Top 20",
                 height=420,
             )
             style_figure(fig_center)
@@ -2283,9 +2287,9 @@ def render_inventory_cost_page(
 
         status_order = ["부진재고", "주의", "정상", "재고 없음"]
         status_color = {
-            "부진재고": "#EE8FA0",
-            "주의": "#FFC85F",
-            "정상": "#86DFA8",
+            "부진재고": "#F8C7D0",
+            "주의": "#FFE7A8",
+            "정상": "#CDEFD8",
             "재고 없음": "#E5EAF2",
         }
         status_summary = (
@@ -2301,6 +2305,7 @@ def render_inventory_cost_page(
                 color="재고상태",
                 category_orders={"재고상태": status_order},
                 color_discrete_map=status_color,
+                title="재고상태별 상품 수",
                 height=360,
             )
             style_figure(fig_status)
@@ -2317,6 +2322,7 @@ def render_inventory_cost_page(
                 color_discrete_map=status_color,
                 category_orders={"재고상태": status_order},
                 labels={"일평균출고량": "일평균 출고량", "현재재고": "현재 재고"},
+                title="일평균 출고량 vs 현재 재고",
                 height=360,
             )
             style_figure(fig_scatter)
