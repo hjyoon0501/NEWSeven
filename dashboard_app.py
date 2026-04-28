@@ -744,6 +744,18 @@ def inject_theme() -> None:
             border-color: #4f6df5 !important;
             box-shadow: 0 0 0 3px rgba(79, 109, 245, 0.12) !important;
         }
+        div[data-baseweb="tag"] {
+            background: linear-gradient(135deg, rgba(222, 244, 255, 0.98), rgba(235, 225, 255, 0.98)) !important;
+            border: 1px solid rgba(147, 173, 255, 0.62) !important;
+            border-radius: 11px !important;
+            color: #5169d7 !important;
+            box-shadow: 0 5px 13px rgba(121, 145, 240, 0.12) !important;
+        }
+        div[data-baseweb="tag"] span,
+        div[data-baseweb="tag"] svg {
+            color: #5169d7 !important;
+            fill: #5169d7 !important;
+        }
         div[data-testid="stFormSubmitButton"] button,
         div[data-testid="stButton"] button,
         div[data-testid="stDownloadButton"] button {
@@ -3844,12 +3856,13 @@ with st.sidebar:
     if selected_brands:
         item_candidates = item_candidates[item_candidates["BRAND"].isin(selected_brands)]
 
-    selected_labels = st.multiselect(
-        "상품",
+    excluded_labels = st.multiselect(
+        "제외할 상품 선택",
         options=item_candidates["LABEL"].tolist(),
-        default=item_candidates["LABEL"].head(5).tolist(),
+        default=[],
+        help="검색 후 선택한 상품은 대시보드 집계에서 제외됩니다.",
     )
-    selected_items = [label.split(" | ", 1)[0] for label in selected_labels]
+    excluded_items = [label.split(" | ", 1)[0] for label in excluded_labels]
 
     center_options = center_master["CENTER_NM"].tolist()
     selected_centers = st.multiselect(
@@ -3876,11 +3889,13 @@ else:
 
 filtered_preorder = filter_preorder(
     preorder_df,
-    selected_items=selected_items,
+    selected_items=[],
     selected_centers=selected_centers,
     selected_brands=selected_brands,
     date_range=selected_date_range,
 )
+if excluded_items:
+    filtered_preorder = filtered_preorder[~filtered_preorder["ITEM_CODE"].astype(str).isin(excluded_items)].copy()
 
 available_item_codes = filtered_preorder["ITEM_CODE"].unique().tolist()
 available_center_names = filtered_preorder["CENTER_NM"].unique().tolist()
