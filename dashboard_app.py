@@ -731,6 +731,11 @@ def inject_theme() -> None:
             background: #ffffff !important;
             box-shadow: 0 9px 22px rgba(79, 109, 245, 0.12) !important;
         }
+        .stTabs [aria-selected="true"]::after,
+        .stTabs [data-baseweb="tab-highlight"] {
+            background: linear-gradient(90deg, #7da7ff, #9a86ff) !important;
+            border-radius: 999px !important;
+        }
         div[data-testid="stTextInput"] input,
         div[data-testid="stDateInput"] input,
         div[data-baseweb="select"] > div,
@@ -752,9 +757,43 @@ def inject_theme() -> None:
             box-shadow: 0 5px 13px rgba(121, 145, 240, 0.12) !important;
         }
         div[data-baseweb="tag"] span,
-        div[data-baseweb="tag"] svg {
+        div[data-baseweb="tag"] div,
+        div[data-baseweb="tag"] svg,
+        div[data-baseweb="tag"] path {
             color: #5169d7 !important;
             fill: #5169d7 !important;
+        }
+        div[data-testid="stMultiSelect"] div[data-baseweb="tag"],
+        div[data-testid="stMultiSelect"] span[data-baseweb="tag"] {
+            background: linear-gradient(135deg, #def4ff, #ebe1ff) !important;
+            border-color: rgba(147, 173, 255, 0.62) !important;
+        }
+        div[data-testid="stMultiSelect"] div[data-baseweb="tag"] *,
+        div[data-testid="stMultiSelect"] span[data-baseweb="tag"] * {
+            color: #5169d7 !important;
+            fill: #5169d7 !important;
+        }
+        div[data-testid="stSlider"] [data-baseweb="slider"] > div > div {
+            background-color: #dce3f1 !important;
+        }
+        div[data-testid="stSlider"] [data-baseweb="slider"] [role="slider"] {
+            background: linear-gradient(135deg, #7da7ff, #9a86ff) !important;
+            border-color: #ffffff !important;
+            box-shadow: 0 6px 16px rgba(121, 145, 240, 0.22) !important;
+        }
+        div[data-testid="stSlider"] [data-baseweb="slider"] [aria-valuenow] ~ div,
+        div[data-testid="stSlider"] [data-baseweb="slider"] div[style*="background"] {
+            background-color: #8f92ff !important;
+        }
+        div[role="radiogroup"] input:checked + div,
+        div[role="radiogroup"] label:has(input:checked) > div:first-child {
+            border-color: #8f92ff !important;
+            background: #8f92ff !important;
+        }
+        div[role="radiogroup"] label:has(input:checked) svg,
+        div[role="radiogroup"] label:has(input:checked) path {
+            fill: #8f92ff !important;
+            color: #8f92ff !important;
         }
         div[data-testid="stFormSubmitButton"] button,
         div[data-testid="stButton"] button,
