@@ -2292,6 +2292,12 @@ def render_inventory_cost_page(
             "정상": "#CDEFD8",
             "재고 없음": "#E5EAF2",
         }
+        scatter_status_color = {
+            "부진재고": "#EE8FA0",
+            "주의": "#FFC85F",
+            "정상": "#86DFA8",
+            "재고 없음": "#CBD5E1",
+        }
         status_summary = (
             stagnant.groupby("재고상태", as_index=False)
             .agg(상품수=("ITEM_CODE", "count"), 재고금액=("재고금액", "sum"), 일재고비용=("일재고비용", "sum"))
@@ -2319,7 +2325,7 @@ def render_inventory_cost_page(
                 color="재고상태",
                 size="재고금액",
                 hover_name="ITEM_NM",
-                color_discrete_map=status_color,
+                color_discrete_map=scatter_status_color,
                 category_orders={"재고상태": status_order},
                 labels={"일평균출고량": "일평균 출고량", "현재재고": "현재 재고"},
                 title="일평균 출고량 vs 현재 재고",
