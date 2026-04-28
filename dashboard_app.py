@@ -1699,6 +1699,8 @@ _MIN_DIM_CM = 3.0
 DEFAULT_PALLET_DAILY_COST = 2035
 DEFAULT_BOX_HANDLING_COST = 90
 DEFAULT_ANNUAL_RATE = 0.05
+INVENTORY_DETAIL_DISPLAY_ROWS = 5_000
+INVENTORY_DETAIL_DOWNLOAD_ROWS = 50_000
 
 
 @st.cache_data(show_spinner=False)
@@ -2268,10 +2270,16 @@ def render_inventory_cost_page(
                     "DAILY_TOTAL_COST": "총 재고비용",
                 }
             )
-            st.dataframe(detail, use_container_width=True, height=460, hide_index=True)
+            detail_view = detail.head(INVENTORY_DETAIL_DISPLAY_ROWS)
+            st.caption(
+                f"전체 {len(detail):,}행 중 화면에는 최대 {INVENTORY_DETAIL_DISPLAY_ROWS:,}행만 표시합니다. "
+                f"CSV는 최대 {INVENTORY_DETAIL_DOWNLOAD_ROWS:,}행까지 내려받을 수 있습니다."
+            )
+            st.dataframe(detail_view, use_container_width=True, height=460, hide_index=True)
+            detail_download = detail.head(INVENTORY_DETAIL_DOWNLOAD_ROWS)
             st.download_button(
                 "전체 비용 CSV 다운로드",
-                data=detail.to_csv(index=False).encode("utf-8-sig"),
+                data=detail_download.to_csv(index=False).encode("utf-8-sig"),
                 file_name="inventory_cost_detail.csv",
                 mime="text/csv",
                 width="stretch",
@@ -2314,8 +2322,13 @@ def render_inventory_cost_page(
                     "LOGISTICS_TO_SLEM_PCT": "매가대비일물류비(%)",
                 }
             )
+            unit_view = unit_df.head(INVENTORY_DETAIL_DISPLAY_ROWS)
+            if len(unit_df) > INVENTORY_DETAIL_DISPLAY_ROWS:
+                st.caption(
+                    f"전체 {len(unit_df):,}행 중 화면에는 최대 {INVENTORY_DETAIL_DISPLAY_ROWS:,}행만 표시합니다."
+                )
             st.dataframe(
-                unit_df,
+                unit_view,
                 use_container_width=True,
                 height=460,
                 hide_index=True,
@@ -2331,9 +2344,10 @@ def render_inventory_cost_page(
                     "매가대비일물류비(%)": st.column_config.NumberColumn("매가대비 일물류비(%)", format="%.3f"),
                 },
             )
+            unit_download = unit_df.head(INVENTORY_DETAIL_DOWNLOAD_ROWS)
             st.download_button(
                 "EA당 단위비용 CSV 다운로드",
-                data=unit_df.to_csv(index=False).encode("utf-8-sig"),
+                data=unit_download.to_csv(index=False).encode("utf-8-sig"),
                 file_name="unit_cost_per_ea.csv",
                 mime="text/csv",
                 width="stretch",
