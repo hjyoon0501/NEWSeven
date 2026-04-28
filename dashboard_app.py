@@ -2283,9 +2283,9 @@ def render_inventory_cost_page(
 
         status_order = ["부진재고", "주의", "정상", "재고 없음"]
         status_color = {
-            "부진재고": "#F4AEBB",
-            "주의": "#FFD98A",
-            "정상": "#AEE8C3",
+            "부진재고": "#EE8FA0",
+            "주의": "#FFC85F",
+            "정상": "#86DFA8",
             "재고 없음": "#E5EAF2",
         }
         status_summary = (
