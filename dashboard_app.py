@@ -131,6 +131,12 @@ def format_won(value: float) -> str:
     return f"{value:,.0f}"
 
 
+def extract_capacity_from_name(value) -> str:
+    text = "" if pd.isna(value) else str(value)
+    match = re.search(r"(\d+(?:\.\d+)?)\s*(g|kg|ml|l|G|KG|ML|L)\b", text)
+    return match.group(0) if match else "-"
+
+
 def normalize_center_code(value) -> str:
     if pd.isna(value):
         return ""
@@ -571,10 +577,10 @@ def inject_theme() -> None:
             font-weight: 800 !important;
         }
         .block-container {
-            max-width: 1480px;
-            padding-top: 1.25rem !important;
-            padding-left: 2rem !important;
-            padding-right: 2rem !important;
+            max-width: 1380px;
+            padding-top: 0.85rem !important;
+            padding-left: 1.35rem !important;
+            padding-right: 1.35rem !important;
         }
         .hero {
             position: relative;
@@ -622,19 +628,19 @@ def inject_theme() -> None:
             position: relative;
             overflow: hidden;
             border: 1px solid rgba(231, 235, 247, 0.95) !important;
-            border-radius: 18px !important;
+            border-radius: 14px !important;
             background: rgba(255, 255, 255, 0.94) !important;
             box-shadow: var(--soft-shadow) !important;
-            min-height: 112px !important;
-            padding: 1.08rem 1.1rem !important;
+            min-height: 82px !important;
+            padding: 0.72rem 0.85rem !important;
         }
         .kpi-card::before {
             content: "";
             display: block;
-            width: 38px;
-            height: 38px;
-            border-radius: 13px;
-            margin-bottom: 0.65rem;
+            width: 26px;
+            height: 26px;
+            border-radius: 9px;
+            margin-bottom: 0.42rem;
             background: linear-gradient(135deg, #4f6df5, #35c8e8);
             box-shadow: 0 10px 22px rgba(79, 109, 245, 0.22);
         }
@@ -649,17 +655,17 @@ def inject_theme() -> None:
         }
         .kpi-label {
             color: #a0a9bb !important;
-            font-size: 0.76rem !important;
+            font-size: 0.7rem !important;
             font-weight: 700 !important;
         }
         .kpi-value {
             color: #161b2d !important;
-            font-size: 1.58rem !important;
+            font-size: 1.25rem !important;
             font-weight: 850 !important;
         }
         .kpi-sub {
             color: #2fc39e !important;
-            font-size: 0.78rem !important;
+            font-size: 0.68rem !important;
             font-weight: 750;
         }
         .insight-card,
@@ -2576,37 +2582,73 @@ def render_past_raw_data_tab(
     base_date: pd.Timestamp,
 ) -> None:
     st.subheader("과거 Raw Data")
-    raw_keyword = st.text_input(
-        "코드명/제품명 검색",
+    f1, f2, f3, f4, f5 = st.columns([1, 0.9, 1, 1, 1.6])
+    selected_center = f1.selectbox(
+        "센터",
+        ["전체"] + sorted(preorder_df["CENTER_NM"].dropna().astype(str).unique().tolist()),
+        key="past_raw_center",
+    )
+    f2.selectbox("대분류", ["과자"], key="past_raw_top")
+    selected_mddv = f3.selectbox(
+        "중분류",
+        ["전체"] + sorted(preorder_df["ITEM_MDDV_NM"].dropna().astype(str).unique().tolist()),
+        key="past_raw_mddv",
+    )
+    mddv_pool = preorder_df if selected_mddv == "전체" else preorder_df[preorder_df["ITEM_MDDV_NM"] == selected_mddv]
+    selected_smdv = f4.selectbox(
+        "소분류",
+        ["전체"] + sorted(mddv_pool["ITEM_SMDV_NM"].dropna().astype(str).unique().tolist()),
+        key="past_raw_smdv",
+    )
+    raw_keyword = f5.text_input(
+        "제품코드 또는 제품명",
         key="past_raw_data_search",
-        placeholder="제품코드, 코드명 또는 제품명을 입력하세요",
+        placeholder="제품코드 또는 제품명을 입력하세요",
     ).strip()
+
+    allowed_items = preorder_df.copy()
+    if selected_center != "전체":
+        allowed_items = allowed_items[allowed_items["CENTER_NM"].astype(str) == selected_center]
+    if selected_mddv != "전체":
+        allowed_items = allowed_items[allowed_items["ITEM_MDDV_NM"] == selected_mddv]
+    if selected_smdv != "전체":
+        allowed_items = allowed_items[allowed_items["ITEM_SMDV_NM"] == selected_smdv]
+    allowed_item_codes = allowed_items["ITEM_CODE"].astype(str).unique().tolist()
+    allowed_center_codes = allowed_items["CENTER_CODE"].map(normalize_center_code).unique().tolist()
+    allowed_center_names = allowed_items["CENTER_NM"].astype(str).unique().tolist()
+
     datasets = [
-        ("센터 발주 Raw", center_order_df, "center_order_filtered.csv"),
-        ("센터 재고 Raw", stock_df, "center_stock_filtered.csv"),
-        ("매출/수요 Raw", sales_df, "sales_filtered.csv"),
-        ("예약주문 Raw", preorder_df, "preorder_filtered.csv"),
+        ("센터 발주 Raw", center_order_df, "center_order_filtered.csv", "ORD_DATE"),
+        ("센터 재고 Raw", stock_df, "center_stock_filtered.csv", "BIZ_DT"),
+        ("매출/수요 Raw", sales_df, "sales_filtered.csv", "SALE_DATE"),
+        ("예약주문 Raw", preorder_df, "preorder_filtered.csv", "NP_RLSE_DATE"),
     ]
-    for title, frame, filename in datasets:
+    for title, frame, filename, date_col in datasets:
         st.markdown(f"##### {title}")
         if frame.empty:
             st.info(f"{title} 데이터가 없습니다.")
             continue
         filtered = frame.copy()
-        if "ORD_YMD" in filtered.columns:
-            dates = pd.to_datetime(filtered["ORD_YMD"], errors="coerce", format="%Y%m%d")
-            filtered = filtered[dates.isna() | (dates <= base_date)]
-        elif "BIZ_DT" in filtered.columns:
-            filtered = filtered[filtered["BIZ_DT"].isna() | (filtered["BIZ_DT"] <= base_date)]
-        elif "SALE_DATE" in filtered.columns:
-            filtered = filtered[filtered["SALE_DATE"].isna() | (filtered["SALE_DATE"] <= base_date)]
-        elif "NP_RLSE_DATE" in filtered.columns:
-            filtered = filtered[filtered["NP_RLSE_DATE"].isna() | (filtered["NP_RLSE_DATE"] <= base_date)]
+        if date_col in filtered.columns:
+            filtered = filtered[filtered[date_col].isna() | (filtered[date_col] <= base_date)]
+
+        if "ITEM_CODE" in filtered.columns:
+            filtered = filtered[filtered["ITEM_CODE"].astype(str).isin(allowed_item_codes)]
+        elif "ITEM_CD" in filtered.columns:
+            filtered = filtered[filtered["ITEM_CD"].astype(str).isin(allowed_item_codes)]
+        if "CENTER_CODE" in filtered.columns:
+            filtered = filtered[filtered["CENTER_CODE"].map(normalize_center_code).isin(allowed_center_codes)]
+        elif "CENT_CD" in filtered.columns:
+            filtered = filtered[filtered["CENT_CD"].map(normalize_center_code).isin(allowed_center_codes)]
+        if "CENTER_NM" in filtered.columns:
+            filtered = filtered[filtered["CENTER_NM"].astype(str).isin(allowed_center_names)]
+        elif "CENT_NM" in filtered.columns:
+            filtered = filtered[filtered["CENT_NM"].astype(str).isin(allowed_center_names)]
 
         if raw_keyword:
             searchable_columns = [
                 col
-                for col in ["ITEM_CODE", "ITEM_CD", "ITEM_NM", "상품명", "제품명", "CENTER_CODE", "CENT_CD"]
+                for col in ["ITEM_CODE", "ITEM_CD", "ITEM_NM", "상품명", "제품명", "CENTER_CODE", "CENT_CD", "CENTER_NM", "CENT_NM"]
                 if col in filtered.columns
             ]
             if searchable_columns:
@@ -2617,18 +2659,21 @@ def render_past_raw_data_tab(
                     )
                 filtered = filtered[search_mask]
 
-        left, right = st.columns([2.4, 1])
-        left.dataframe(filtered.head(200), width="stretch", height=300)
-        right.download_button(
-            label=f"{filename} 다운로드",
+        sort_options = filtered.columns.tolist()
+        toolbar_left, toolbar_right = st.columns([1.6, 0.6])
+        sort_col = toolbar_left.selectbox("정렬 기준", sort_options, key=f"sort_{filename}")
+        if sort_col:
+            filtered = filtered.sort_values(sort_col, ascending=False)
+        toolbar_right.download_button(
+            label="CSV",
             data=filtered.to_csv(index=False).encode("utf-8-sig"),
             file_name=filename,
             mime="text/csv",
             width="stretch",
             key=f"download_{filename}",
         )
-        right.write(f"조회 건수: {len(filtered):,}")
-        right.write(f"표시 컬럼 수: {len(filtered.columns):,}")
+        st.caption(f"조회 건수 {len(filtered):,} · 컬럼 {len(filtered.columns):,}")
+        st.dataframe(filtered.head(300), width="stretch", height=330)
 
 
 def render_past_simple_lookup(
@@ -3249,6 +3294,333 @@ def render_past_current_release_focus(preorder_df: pd.DataFrame, base_date: pd.T
     st.dataframe(release_window[show_columns], width="stretch", height=360, hide_index=True)
 
 
+def build_past_item_status_df(
+    preorder_df: pd.DataFrame,
+    sales_df: pd.DataFrame,
+    predictions_df: pd.DataFrame,
+) -> pd.DataFrame:
+    if preorder_df.empty:
+        return pd.DataFrame()
+
+    item_info = preorder_df.groupby("ITEM_CODE").agg(
+        ITEM_NM=("ITEM_NM", "first"),
+        NP_RLSE_YMD=("NP_RLSE_YMD", "first"),
+        BRAND=("BRAND", "first"),
+        ITEM_MDDV_NM=("ITEM_MDDV_NM", "first"),
+        ITEM_SMDV_NM=("ITEM_SMDV_NM", "first"),
+        ST_SLEM_AMT=("ST_SLEM_AMT", "first"),
+        초도발주량=("INITIAL_ORD_QTY", "sum"),
+        초기예약발주=("total_pre_order_qty(D-11~D-8)", "sum"),
+        참여점포수=("ordering_store_cnt", "sum"),
+        전체점포수=("total_store_cnt", "sum"),
+    ).reset_index()
+
+    if not predictions_df.empty:
+        item_orders = build_outflow_7d_summary(predictions_df, ["ITEM_CODE"])
+    else:
+        item_orders = pd.DataFrame(columns=["ITEM_CODE", "실출고량"])
+
+    if not sales_df.empty:
+        item_sales = (
+            sales_df.groupby("ITEM_CODE")[["CENTER_SALE_QTY", "CENTER_SALE_AMT_VAT"]]
+            .sum()
+            .reset_index()
+            .rename(columns={"CENTER_SALE_QTY": "실수요", "CENTER_SALE_AMT_VAT": "실수요금액"})
+        )
+    else:
+        item_sales = pd.DataFrame(columns=["ITEM_CODE", "실수요", "실수요금액"])
+
+    item_df = item_info.merge(item_orders, on="ITEM_CODE", how="left").merge(item_sales, on="ITEM_CODE", how="left")
+    for col in ["실출고량", "실수요", "실수요금액"]:
+        item_df[col] = item_df[col].fillna(0)
+    item_df["출시일자"] = pd.to_datetime(item_df["NP_RLSE_YMD"].astype(str), format="%Y%m%d", errors="coerce")
+    item_df["용량"] = item_df["ITEM_NM"].map(extract_capacity_from_name)
+    safe_initial = item_df["초도발주량"].replace(0, pd.NA)
+    item_df["초도출고율(%)"] = (item_df["실출고량"] / safe_initial * 100).round(1)
+    item_df["출고율"] = item_df["실출고량"] / safe_initial
+    item_df["상태"] = classify_outflow_status(item_df["출고율"])
+    item_df["결품여부"] = item_df["상태"].isin(["결품 위험", "결품"])
+    item_df["부진여부"] = item_df["상태"].isin(["부진재고", "과발주 위험"])
+    return item_df
+
+
+def build_past_center_raw_table(
+    preorder_df: pd.DataFrame,
+    sales_df: pd.DataFrame,
+    predictions_df: pd.DataFrame,
+) -> pd.DataFrame:
+    if preorder_df.empty:
+        return pd.DataFrame()
+    ten_day_cols = [col for col in PREORDER_DAY_COLUMNS[:10] if col in preorder_df.columns]
+    raw = preorder_df.copy()
+    raw["예약주문(10일치)"] = raw[ten_day_cols].sum(axis=1) if ten_day_cols else raw["total_pre_order_qty(D-11~D-8)"]
+    base = raw.groupby(["ITEM_CODE", "CENTER_CODE", "CENTER_NM"], as_index=False).agg(
+        ITEM_NM=("ITEM_NM", "first"),
+        NP_RLSE_DATE=("NP_RLSE_DATE", "first"),
+        BRAND=("BRAND", "first"),
+        ITEM_MDDV_NM=("ITEM_MDDV_NM", "first"),
+        ITEM_SMDV_NM=("ITEM_SMDV_NM", "first"),
+        ST_SLEM_AMT=("ST_SLEM_AMT", "first"),
+        예약주문4일치=("total_pre_order_qty(D-11~D-8)", "sum"),
+        예약주문10일치=("예약주문(10일치)", "sum"),
+        초도발주량=("INITIAL_ORD_QTY", "sum"),
+    )
+    base["CENTER_CODE"] = base["CENTER_CODE"].map(normalize_center_code)
+
+    if not predictions_df.empty:
+        shipped = build_outflow_7d_summary(predictions_df, ["ITEM_CODE", "CENTER_CODE"])
+        base = base.merge(shipped, on=["ITEM_CODE", "CENTER_CODE"], how="left")
+    else:
+        base["실출고량"] = 0
+
+    if not sales_df.empty:
+        sales = (
+            sales_df.groupby(["ITEM_CODE", "CENTER_NM"], as_index=False)["CENTER_SALE_QTY"]
+            .sum()
+            .rename(columns={"CENTER_SALE_QTY": "실수요"})
+        )
+        base = base.merge(sales, on=["ITEM_CODE", "CENTER_NM"], how="left")
+    else:
+        base["실수요"] = 0
+
+    base["실출고량"] = base["실출고량"].fillna(0)
+    base["실수요"] = base["실수요"].fillna(0)
+    safe_initial = base["초도발주량"].replace(0, pd.NA)
+    base["초도출고율(%)"] = (base["실출고량"] / safe_initial * 100).round(1)
+    base["용량"] = base["ITEM_NM"].map(extract_capacity_from_name)
+    return base
+
+
+def render_past_lookup_overview(
+    preorder_df: pd.DataFrame,
+    sales_df: pd.DataFrame,
+    predictions_df: pd.DataFrame,
+) -> None:
+    st.subheader("과거 신상품 조회")
+    raw_df = build_past_center_raw_table(preorder_df, sales_df, predictions_df)
+    if raw_df.empty:
+        st.info("조회할 과거 신상품 데이터가 없습니다.")
+        return
+
+    min_date = raw_df["NP_RLSE_DATE"].min().date()
+    max_date = raw_df["NP_RLSE_DATE"].max().date()
+    f1, f2, f3, f4, f5, f6 = st.columns([1.3, 1, 0.8, 1, 1, 1.5])
+    selected_range = f1.date_input("기간", value=(min_date, max_date), min_value=min_date, max_value=max_date, key="past_overview_date")
+    selected_center = f2.selectbox("센터", ["전체"] + sorted(raw_df["CENTER_NM"].dropna().astype(str).unique().tolist()), key="past_overview_center")
+    f3.selectbox("대분류", ["과자"], key="past_overview_top")
+    selected_mddv = f4.selectbox("중분류", ["전체"] + sorted(raw_df["ITEM_MDDV_NM"].dropna().astype(str).unique().tolist()), key="past_overview_mddv")
+    smdv_pool = raw_df if selected_mddv == "전체" else raw_df[raw_df["ITEM_MDDV_NM"] == selected_mddv]
+    selected_smdv = f5.selectbox("소분류", ["전체"] + sorted(smdv_pool["ITEM_SMDV_NM"].dropna().astype(str).unique().tolist()), key="past_overview_smdv")
+    keyword = f6.text_input("제품코드 또는 제품명", key="past_overview_keyword")
+
+    filtered = raw_df.copy()
+    if isinstance(selected_range, tuple) and len(selected_range) == 2:
+        filtered = filtered[filtered["NP_RLSE_DATE"].dt.date.between(selected_range[0], selected_range[1])]
+    if selected_center != "전체":
+        filtered = filtered[filtered["CENTER_NM"] == selected_center]
+    if selected_mddv != "전체":
+        filtered = filtered[filtered["ITEM_MDDV_NM"] == selected_mddv]
+    if selected_smdv != "전체":
+        filtered = filtered[filtered["ITEM_SMDV_NM"] == selected_smdv]
+    if keyword.strip():
+        kw = keyword.strip()
+        filtered = filtered[
+            filtered["ITEM_CODE"].astype(str).str.contains(kw, case=False, na=False)
+            | filtered["ITEM_NM"].astype(str).str.contains(kw, case=False, na=False)
+        ]
+
+    display = filtered.rename(columns={
+        "CENTER_NM": "센터명",
+        "ITEM_CODE": "제품코드",
+        "ITEM_NM": "제품명",
+        "NP_RLSE_DATE": "출시일자",
+        "BRAND": "브랜드",
+        "ITEM_MDDV_NM": "중분류",
+        "ITEM_SMDV_NM": "소분류",
+        "ST_SLEM_AMT": "가격",
+        "예약주문4일치": "예약주문(4일치)",
+        "예약주문10일치": "예약주문(10일치)",
+        "실출고량": "실출고량(7일치)",
+        "초도출고율(%)": "초도출고율",
+    })
+    ordered_cols = ["센터명", "제품코드", "제품명", "출시일자", "브랜드", "중분류", "소분류", "가격", "용량", "예약주문(4일치)", "예약주문(10일치)", "초도발주량", "실출고량(7일치)", "초도출고율"]
+    available_cols = [col for col in ordered_cols if col in display.columns]
+    selected_cols = st.multiselect("컬럼 선택", available_cols, default=available_cols, key="past_overview_columns")
+    product_options = display[["제품코드", "제품명"]].drop_duplicates()
+    product_labels = (product_options["제품코드"].astype(str) + " | " + product_options["제품명"].astype(str)).tolist()
+    selected_products = st.multiselect("상품 선택(옵션)", product_labels, default=[], key="past_overview_products")
+    if selected_products:
+        selected_codes = [label.split(" | ", 1)[0] for label in selected_products]
+        picked = display[display["제품코드"].astype(str).isin(selected_codes)]
+        st.markdown("##### 선택 상품 모아보기")
+        st.dataframe(picked[selected_cols], use_container_width=True, height=220, hide_index=True)
+        display["_선택"] = display["제품코드"].astype(str).isin(selected_codes).astype(int)
+        display = display.sort_values(["_선택", "실출고량(7일치)"], ascending=[False, False]).drop(columns="_선택")
+    else:
+        display = display.sort_values("실출고량(7일치)", ascending=False)
+
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("행 수", f"{len(display):,}")
+    k2.metric("초도발주량", f"{display['초도발주량'].sum():,.0f}")
+    k3.metric("실출고량(7일치)", f"{display['실출고량(7일치)'].sum():,.0f}")
+    k4.metric("평균 초도출고율", f"{display['초도출고율'].mean():.1f}%" if not display.empty else "-")
+    st.dataframe(display[selected_cols], use_container_width=True, height=520, hide_index=True)
+
+
+def render_past_product_data_detail(
+    preorder_df: pd.DataFrame,
+    sales_df: pd.DataFrame,
+    predictions_df: pd.DataFrame,
+) -> None:
+    st.subheader("상품별 데이터")
+    item_df = build_past_item_status_df(preorder_df, sales_df, predictions_df)
+    if item_df.empty:
+        st.info("상품별 데이터를 만들 수 없습니다.")
+        return
+    keyword = st.text_input("제품코드 또는 제품명", key="past_product_detail_search")
+    options = item_df.copy()
+    if keyword.strip():
+        kw = keyword.strip()
+        options = options[
+            options["ITEM_CODE"].astype(str).str.contains(kw, case=False, na=False)
+            | options["ITEM_NM"].astype(str).str.contains(kw, case=False, na=False)
+        ]
+    if options.empty:
+        st.info("검색 조건에 해당하는 상품이 없습니다.")
+        return
+    labels = (options["ITEM_CODE"].astype(str) + " | " + options["ITEM_NM"].astype(str)).tolist()
+    selected_label = st.selectbox("상품 선택", labels, key="past_product_detail_select")
+    selected_code = selected_label.split(" | ", 1)[0]
+    selected_item = item_df[item_df["ITEM_CODE"].astype(str) == selected_code].iloc[0]
+    st.markdown(
+        f"""
+        <div class="insight-card" style="border-left-color:#4f6df5;">
+            <strong>{selected_item['ITEM_NM']}</strong><br>
+            {selected_item['BRAND']} · {selected_item['ITEM_MDDV_NM']} · {selected_item['ITEM_SMDV_NM']} · 출시일 {selected_item['출시일자'].date()}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    center_table = build_past_center_raw_table(preorder_df[preorder_df["ITEM_CODE"].astype(str) == selected_code], sales_df, predictions_df)
+    if center_table.empty:
+        st.info("센터별 데이터가 없습니다.")
+        return
+    center_view = center_table.rename(columns={
+        "CENTER_NM": "센터명",
+        "예약주문4일치": "예약주문(4일치)",
+        "예약주문10일치": "예약주문(10일치)",
+        "실출고량": "실출고량(7일치)",
+        "초도출고율(%)": "초도출고율",
+    })
+    fig = go.Figure()
+    for name, color in [("예약주문(4일치)", "#A7F3D0"), ("예약주문(10일치)", "#34D399"), ("초도발주량", "#7b4cf3"), ("실출고량(7일치)", "#35c8e8")]:
+        fig.add_trace(go.Bar(name=name, x=center_view["센터명"], y=center_view[name], marker_color=color))
+    fig.update_layout(barmode="group", height=340, margin=dict(l=0, r=0, t=20, b=80), plot_bgcolor="white", paper_bgcolor="white")
+    fig.update_xaxes(tickangle=-35)
+    fig.update_yaxes(tickformat=",")
+    st.plotly_chart(fig, use_container_width=True)
+    st.dataframe(
+        center_view[["센터명", "예약주문(4일치)", "예약주문(10일치)", "초도발주량", "실출고량(7일치)", "초도출고율"]],
+        use_container_width=True,
+        height=360,
+        hide_index=True,
+    )
+
+
+def render_past_status_analysis_tab(
+    preorder_df: pd.DataFrame,
+    sales_df: pd.DataFrame,
+    predictions_df: pd.DataFrame,
+) -> None:
+    st.subheader("상품별 상태 분석")
+    item_df = build_past_item_status_df(preorder_df, sales_df, predictions_df)
+    if item_df.empty:
+        st.info("상태 분석 데이터가 없습니다.")
+        return
+    min_date = item_df["출시일자"].min().date()
+    max_date = item_df["출시일자"].max().date()
+    selected_range = st.date_input("기간", value=(min_date, max_date), min_value=min_date, max_value=max_date, key="past_status_date")
+    filtered = item_df.copy()
+    if isinstance(selected_range, tuple) and len(selected_range) == 2:
+        filtered = filtered[filtered["출시일자"].dt.date.between(selected_range[0], selected_range[1])]
+    status_filter = st.radio("상태 필터", ["전체", *OUTFLOW_STATUS_ORDER], horizontal=True, key="past_status_filter")
+    if status_filter != "전체":
+        filtered = filtered[filtered["상태"] == status_filter]
+
+    r1, r2, r3, r4 = st.columns(4)
+    r1.metric("상품 수", f"{len(filtered):,}")
+    r2.metric("정상", f"{(filtered['상태'] == '정상').sum():,}")
+    r3.metric("결품/위험", f"{filtered['상태'].isin(['결품 위험', '결품']).sum():,}")
+    r4.metric("과발주/부진", f"{filtered['상태'].isin(['부진재고', '과발주 위험']).sum():,}")
+
+    res_tbl = filtered[[
+        "ITEM_CODE", "ITEM_NM", "출시일자", "BRAND", "ITEM_MDDV_NM", "ITEM_SMDV_NM",
+        "초도발주량", "초기예약발주", "실출고량", "초도출고율(%)", "실수요", "상태",
+    ]].rename(columns={
+        "ITEM_CODE": "제품코드", "ITEM_NM": "제품명", "BRAND": "브랜드",
+        "ITEM_MDDV_NM": "중분류", "ITEM_SMDV_NM": "소분류",
+        "실출고량": "실출고량(7일치)", "초도출고율(%)": "초도출고율",
+    }).copy()
+    st.dataframe(res_tbl, use_container_width=True, height=360, hide_index=True)
+
+    st.markdown("#### 중/소분류 집계")
+    agg_level = st.radio("집계 기준", ["중분류", "소분류"], horizontal=True, key="past_status_agg")
+    agg_col = "ITEM_MDDV_NM" if agg_level == "중분류" else "ITEM_SMDV_NM"
+    cat_agg = filtered.groupby(agg_col).agg(
+        상품수=("ITEM_CODE", "count"),
+        총초도발주량=("초도발주량", "sum"),
+        총초기예약발주=("초기예약발주", "sum"),
+        총실출고량=("실출고량", "sum"),
+        총실수요=("실수요", "sum"),
+    ).reset_index().rename(columns={agg_col: agg_level})
+    st.dataframe(cat_agg, use_container_width=True, height=260, hide_index=True)
+
+    status_counts = filtered.groupby([agg_col, "상태"]).size().reset_index(name="상품수")
+    fig_status = px.bar(
+        status_counts,
+        x=agg_col,
+        y="상품수",
+        color="상태",
+        category_orders={"상태": OUTFLOW_STATUS_ORDER},
+        color_discrete_map=OUTFLOW_STATUS_COLORS,
+        height=340,
+    )
+    style_figure(fig_status)
+    st.plotly_chart(fig_status, use_container_width=True)
+
+    scatter_df = build_prediction_initial_outflow_scatter(
+        predictions_df,
+        preorder_df,
+        filtered["ITEM_CODE"].astype(str).unique().tolist(),
+        "전체",
+    )
+    if not scatter_df.empty:
+        scatter_df = scatter_df[(scatter_df["INITIAL_ORD_QTY"] > 0) & (scatter_df["OUTFLOW_7D"] > 0)].copy()
+    if scatter_df.empty:
+        st.info("로그 스케일 그래프에 표시할 데이터가 없습니다.")
+        return
+    fig_sc = px.scatter(
+        scatter_df,
+        x="OUTFLOW_7D",
+        y="INITIAL_ORD_QTY",
+        color="상태",
+        category_orders={"상태": OUTFLOW_STATUS_ORDER},
+        color_discrete_map=OUTFLOW_STATUS_COLORS,
+        hover_name="ITEM_NM",
+        labels={"OUTFLOW_7D": "OPTIMAL = OUTFLOW_7D (log)", "INITIAL_ORD_QTY": "MD 초도발주량 (log)"},
+        height=420,
+    )
+    min_axis = max(1, min(scatter_df["OUTFLOW_7D"].min(), scatter_df["INITIAL_ORD_QTY"].min()))
+    max_axis = max(scatter_df["OUTFLOW_7D"].max(), scatter_df["INITIAL_ORD_QTY"].max())
+    line_x = np.geomspace(min_axis, max_axis, 80)
+    for label, multiplier, dash in [("y=x", 1.0, "dash"), ("MD = 2 x OPTIMAL", 2.0, "dot"), ("MD = 0.5 x OPTIMAL", 0.5, "dot")]:
+        fig_sc.add_trace(go.Scatter(x=line_x, y=line_x * multiplier, mode="lines", line=dict(color="#9BA6BD", dash=dash), name=label, hoverinfo="skip"))
+    fig_sc.update_xaxes(type="log")
+    fig_sc.update_yaxes(type="log")
+    style_figure(fig_sc)
+    st.plotly_chart(fig_sc, use_container_width=True)
+
+
 def render_past_dashboard_page(
     preorder_df: pd.DataFrame,
     sales_df: pd.DataFrame,
@@ -3259,18 +3631,16 @@ def render_past_dashboard_page(
 ) -> None:
     st.markdown("## 과거 신상품 조회")
     tabs = st.tabs(
-        ["제품별 데이터", "과거 Raw Data", "과거 신상품 조회", "카테고리", "기준일 신상품"]
+        ["과거 신상품 조회", "과거 Raw Data", "상품별 데이터", "상품별 상태 분석"]
     )
     with tabs[0]:
-        render_past_product_data_tab(preorder_df, sales_df, base_date)
+        render_past_lookup_overview(preorder_df, sales_df, predictions_df)
     with tabs[1]:
         render_past_raw_data_tab(preorder_df, sales_df, center_order_df, stock_df, base_date)
     with tabs[2]:
-        render_past_simple_lookup(preorder_df, center_order_df, sales_df, predictions_df)
+        render_past_product_data_detail(preorder_df, sales_df, predictions_df)
     with tabs[3]:
-        render_past_category_compare(preorder_df, sales_df, base_date)
-    with tabs[4]:
-        render_past_current_release_focus(preorder_df, base_date)
+        render_past_status_analysis_tab(preorder_df, sales_df, predictions_df)
 
 
 preorder_df = load_preorder()
@@ -3497,15 +3867,16 @@ if filtered_preorder.empty:
 
 kpis = summarize_kpis(filtered_preorder, filtered_sales, filtered_stock)
 
-kpi_cols = st.columns(4)
-with kpi_cols[0]:
-    render_kpi_card("Product Revenue", format_won(kpis["누적 판매금액"]), "누적 판매금액")
-with kpi_cols[1]:
-    render_kpi_card("Initial Orders", format_int(kpis["초도 발주량"]), f"{format_int(kpis['상품 수'])}개 상품")
-with kpi_cols[2]:
-    render_kpi_card("Preorder Response", format_int(kpis["사전 예약량"]), f"{format_pct(kpis['예약/초도 비율'])}")
-with kpi_cols[3]:
-    render_kpi_card("Center Coverage", format_int(kpis["센터 수"]), f"평균 재고 {format_int(kpis['평균 재고'])}")
+if st.session_state.get("weekly_view_mode", "list") != "detail":
+    kpi_cols = st.columns(4)
+    with kpi_cols[0]:
+        render_kpi_card("누적 판매금액", format_won(kpis["누적 판매금액"]), "판매 실적")
+    with kpi_cols[1]:
+        render_kpi_card("초도 발주량", format_int(kpis["초도 발주량"]), f"{format_int(kpis['상품 수'])}개 상품")
+    with kpi_cols[2]:
+        render_kpi_card("사전 예약량", format_int(kpis["사전 예약량"]), f"{format_pct(kpis['예약/초도 비율'])}")
+    with kpi_cols[3]:
+        render_kpi_card("센터 커버리지", format_int(kpis["센터 수"]), f"평균 재고 {format_int(kpis['평균 재고'])}")
 
 item_summary = build_item_summary(filtered_preorder, filtered_sales)
 center_summary = build_center_summary(filtered_preorder, filtered_sales, filtered_stock)
@@ -3618,7 +3989,7 @@ else:
                 <strong>{selected_weekly_row['ITEM_NM']}</strong><br>
                 {category_text}<br>
                 출시일 {selected_weekly_row['NP_RLSE_DATE'].date()} / 판매가 {format_won(selected_weekly_row['ST_SLEM_AMT'])}원 / 최소주문 {format_int(selected_weekly_row['MIN_ORD_QTY'])}
-                {f"<br><span style='color:#5f6b7a;'>{item_summary_text}</span>" if item_summary_text else ""}
+                {f"<br><span style='display:block;margin-top:0.65rem;color:#4f6df5;font-size:1.02rem;font-weight:800;line-height:1.55;'>&ldquo;{item_summary_text}&rdquo;</span>" if item_summary_text else ""}
             </div>
             """,
             unsafe_allow_html=True,
@@ -3650,58 +4021,26 @@ else:
     if center_key not in st.session_state and default_center:
         st.session_state[center_key] = default_center
 
-    left, right = st.columns([1.15, 1])
-    with left:
+    trend_options = ["전체"] + center_options
+    trend_center = st.selectbox("예약주문 추이 센터", trend_options, key=f"weekly_trend_center_{selected_weekly_item}")
+    if trend_center == "전체":
+        trend_source = selected_profile.copy()
+    else:
+        trend_source = selected_center_profile[selected_center_profile["CENTER_NM"] == trend_center].copy()
+    if not trend_source.empty:
         fig = px.line(
-            selected_profile,
+            trend_source,
             x="예약일자 표시",
             y="예약 수량",
             markers=True,
-            title="전체 예약주문 추이",
+            title="예약주문 추이",
             labels={"예약일자 표시": "예약일자", "예약 수량": "예약 수량"},
             color_discrete_sequence=[TABLEAU_COLORS[0]],
-            category_orders={"예약일자 표시": selected_profile["예약일자 표시"].tolist()},
+            category_orders={"예약일자 표시": trend_source["예약일자 표시"].tolist()},
         )
         style_figure(fig)
+        fig.update_layout(height=460)
         st.plotly_chart(fig, use_container_width=True, config={})
-
-    with right:
-        if center_options:
-            fig = px.bar(
-                center_share,
-                x="CENTER_NM",
-                y="센터 비중(%)",
-                custom_data=["CENTER_NM", "RESERVATION_QTY", "ORDERING_STORE_CNT"],
-                title="센터별 예약주문 비중",
-                labels={"CENTER_NM": "센터", "센터 비중(%)": "예약 비중(%)"},
-                color="센터 비중(%)",
-                color_continuous_scale=["#edf2ff", "#4f6df5"],
-            )
-            style_figure(fig)
-            fig.update_traces(
-                hovertemplate=(
-                    "센터=%{customdata[0]}<br>"
-                    "예약 비중=%{y:.1f}%<br>"
-                    "예약 수량=%{customdata[1]:,.0f}<br>"
-                    "예약 점포 수=%{customdata[2]:,.0f}<extra></extra>"
-                )
-            )
-            fig.update_layout(coloraxis_showscale=False)
-            center_select_event = st.plotly_chart(
-                fig,
-                use_container_width=True,
-                config={},
-                on_select="rerun",
-                key=f"center_share_chart_{selected_weekly_item}",
-            )
-
-            selected_points = center_select_event.selection.points if center_select_event else []
-            if selected_points:
-                clicked_center_name = selected_points[0].get("x")
-                if clicked_center_name in center_options:
-                    st.session_state[center_key] = clicked_center_name
-        else:
-            st.info("센터 비중을 보여줄 데이터가 없습니다.")
 
     selected_center_name = (
         st.session_state.get(center_key, default_center) if center_options else None
@@ -3812,35 +4151,47 @@ else:
             st.info("지도에 표시할 센터 좌표 데이터가 없습니다.")
 
     with trend_col:
-        if selected_center_name:
-            scoped_center_profile = selected_center_profile[
-                selected_center_profile["CENTER_NM"] == selected_center_name
-            ].copy()
-            st.markdown(
-                f"""
-                <div class="insight-card" style="border-left-color:#f28e2b;">
-                    <strong>{selected_center_name}</strong> 센터 예약주문 추이
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-            fig = px.line(
-                scoped_center_profile,
-                x="예약일자 표시",
-                y="예약 수량",
-                markers=True,
-                title="",
-                labels={"예약일자 표시": "예약일자", "예약 수량": "예약 수량"},
-                color_discrete_sequence=[TABLEAU_COLORS[1]],
-                category_orders={"예약일자 표시": scoped_center_profile["예약일자 표시"].tolist()},
+        if center_options:
+            fig = px.bar(
+                center_share,
+                x="CENTER_NM",
+                y="센터 비중(%)",
+                custom_data=["CENTER_NM", "RESERVATION_QTY", "ORDERING_STORE_CNT"],
+                title="센터별 예약주문 비중",
+                labels={"CENTER_NM": "센터", "센터 비중(%)": "예약 비중(%)"},
+                color="센터 비중(%)",
+                color_continuous_scale=["#edf2ff", "#4f6df5"],
             )
             style_figure(fig)
-            fig.update_layout(height=420, margin=dict(l=0, r=0, t=10, b=0))
-            st.plotly_chart(fig, use_container_width=True, config={})
+            fig.update_traces(
+                hovertemplate=(
+                    "센터=%{customdata[0]}<br>"
+                    "예약 비중=%{y:.1f}%<br>"
+                    "예약 수량=%{customdata[1]:,.0f}<br>"
+                    "예약 점포 수=%{customdata[2]:,.0f}<extra></extra>"
+                )
+            )
+            fig.update_layout(coloraxis_showscale=False, height=420)
+            center_select_event = st.plotly_chart(
+                fig,
+                use_container_width=True,
+                config={},
+                on_select="rerun",
+                key=f"center_share_chart_{selected_weekly_item}",
+            )
+            selected_points = center_select_event.selection.points if center_select_event else []
+            if selected_points:
+                clicked_center_name = selected_points[0].get("x")
+                if clicked_center_name in center_options:
+                    st.session_state[center_key] = clicked_center_name
         else:
-            st.info("센터를 클릭하면 해당 센터 예약주문 추이를 볼 수 있습니다.")
+            st.info("센터 비중을 보여줄 데이터가 없습니다.")
 
     detail_table = selected_center_plan.copy()
+    if not detail_table.empty:
+        detail_table["LDU"] = detail_table["CENTER_CODE"].map(
+            lambda code: CENTER_WEIGHT_CONFIG.get(normalize_center_code(code), {}).get("ldu", "")
+        ).replace("", pd.NA).fillna(detail_table["CENTER_NM"])
     st.dataframe(
         detail_table,
         width="stretch",
