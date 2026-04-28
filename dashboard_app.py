@@ -645,14 +645,8 @@ def inject_theme() -> None:
             padding: 0.72rem 0.85rem !important;
         }
         .kpi-card::before {
-            content: "";
-            display: block;
-            width: 26px;
-            height: 26px;
-            border-radius: 9px;
-            margin-bottom: 0.42rem;
-            background: linear-gradient(135deg, #4f6df5, #35c8e8);
-            box-shadow: 0 10px 22px rgba(79, 109, 245, 0.22);
+            content: none !important;
+            display: none !important;
         }
         .kpi-card::after {
             content: "...";
@@ -664,9 +658,10 @@ def inject_theme() -> None:
             letter-spacing: 0.08em;
         }
         .kpi-label {
-            color: #a0a9bb !important;
-            font-size: 0.7rem !important;
-            font-weight: 700 !important;
+            color: #6f7d96 !important;
+            font-size: 0.9rem !important;
+            font-weight: 850 !important;
+            margin-bottom: 0.6rem !important;
         }
         .kpi-value {
             color: #161b2d !important;
