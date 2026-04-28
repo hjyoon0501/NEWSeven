@@ -35,6 +35,16 @@ CENTER_ORDER_PATH = APP_DIR / "A1_final_center_order.csv"
 PREDICTIONS_PATH = APP_DIR / "predictions.parquet"
 MASTER_ITEM_PATH = DATA_DIR / "A7_신상품_상품마스터.csv"
 CENTER_MAP_PATH = DATA_DIR / "target_centers_for_map.csv"
+W_RECOMMEND_CANDIDATES = [
+    APP_DIR / "asymmetric_recommended_W.csv",
+    DATA_DIR / "asymmetric_recommended_W.csv",
+    APP_DIR / "W_RECOMMEND.parquet",
+    APP_DIR / "W_RECOMMEND.csv",
+    APP_DIR / "W_RECOMMEND.xlsx",
+    DATA_DIR / "W_RECOMMEND.parquet",
+    DATA_DIR / "W_RECOMMEND.csv",
+    DATA_DIR / "W_RECOMMEND.xlsx",
+]
 
 MASTER_ACCOUNT_ID = "master"
 MASTER_ACCOUNT_PASSWORD = "master123!"
@@ -1470,6 +1480,57 @@ def build_prediction_simulation_base(
     return base
 
 
+@st.cache_data(show_spinner=False)
+def load_w_recommend() -> pd.DataFrame:
+    recommend_path = next((path for path in W_RECOMMEND_CANDIDATES if path.exists()), None)
+    if recommend_path is None:
+        return pd.DataFrame()
+
+    suffix = recommend_path.suffix.lower()
+    if suffix == ".parquet":
+        df = pd.read_parquet(recommend_path)
+    elif suffix in {".xlsx", ".xls"}:
+        df = pd.read_excel(recommend_path)
+    else:
+        df = pd.read_csv(recommend_path)
+
+    rename_map = {
+        "CENT_CD": "CENTER_CODE",
+        "CENTER_CD": "CENTER_CODE",
+        "CENT_CODE": "CENTER_CODE",
+        "CENTER": "CENTER_CODE",
+        "W": "W_RECOMMEND",
+        "WEIGHT": "W_RECOMMEND",
+        "RECOMMEND_WEIGHT": "W_RECOMMEND",
+    }
+    df = df.rename(columns={col: rename_map.get(str(col).strip().upper(), col) for col in df.columns})
+    if "CENTER_CODE" not in df.columns or "W_RECOMMEND" not in df.columns:
+        return pd.DataFrame()
+
+    df = df[["CENTER_CODE", "W_RECOMMEND"]].copy()
+    df["CENTER_CODE"] = df["CENTER_CODE"].map(normalize_center_code)
+    df["W_RECOMMEND"] = clean_numeric(df["W_RECOMMEND"])
+    return (
+        df.dropna(subset=["CENTER_CODE", "W_RECOMMEND"])
+        .groupby("CENTER_CODE", as_index=False)["W_RECOMMEND"]
+        .mean()
+    )
+
+
+def build_center_weight_lookup(center_codes: list[str]) -> dict[str, float]:
+    weights = {
+        center_code: float(CENTER_WEIGHT_CONFIG.get(center_code, {}).get("weight", 1.0))
+        for center_code in center_codes
+    }
+    recommend_df = load_w_recommend()
+    if not recommend_df.empty:
+        recommended = recommend_df.set_index("CENTER_CODE")["W_RECOMMEND"].to_dict()
+        for center_code in center_codes:
+            if center_code in recommended and pd.notna(recommended[center_code]):
+                weights[center_code] = float(recommended[center_code])
+    return weights
+
+
 def render_md_order_simulation_tab(
     preorder_df: pd.DataFrame,
     predictions_df: pd.DataFrame,
@@ -1541,6 +1602,7 @@ def render_md_order_simulation_tab(
     )
     center_codes = center_order["CENTER_CODE"].tolist()
     center_names = dict(zip(center_order["CENTER_CODE"], center_order["CENTER_NM"]))
+    center_weight_lookup = build_center_weight_lookup(center_codes)
 
     matrix_base = (
         scoped.groupby(["ITEM_CODE", "ITEM_NM", "CENTER_CODE"], as_index=False)
@@ -1584,15 +1646,6 @@ def render_md_order_simulation_tab(
     ):
         st.session_state[state_key] = default_md.copy()
 
-    action_cols = st.columns([0.6, 0.6, 0.6, 3])
-    if action_cols[0].button("편집", width="stretch", key="md_sim_edit_button"):
-        st.session_state[edit_key] = True
-    if action_cols[1].button("초기화", width="stretch", key="md_sim_reset_button"):
-        st.session_state[state_key] = default_md.copy()
-        st.session_state[edit_key] = False
-        st.rerun()
-    apply_clicked = action_cols[2].button("적용", width="stretch", key="md_sim_apply_button")
-
     display_ml = (ml_pivot / unit_divisor).round(0).astype(int)
     display_md = (st.session_state[state_key].reindex_like(current_pivot).fillna(0) / unit_divisor).round(0).astype(int)
 
@@ -1615,12 +1668,6 @@ def render_md_order_simulation_tab(
         column_config[md_col] = st.column_config.NumberColumn(f"{center_name} MD", min_value=0, step=1, format="%,.0f")
         disabled_cols.append(ml_col)
 
-    k1, k2, k3, k4 = st.columns(4)
-    k1.metric("페어 신상품 수", f"{len(display_ml):,}")
-    k2.metric("아이템 x 센터 행", f"{len(matrix_base):,}")
-    k3.metric(f"현행 공식 합 ({unit_choice})", format_int(current_pivot.to_numpy().sum() / unit_divisor))
-    k4.metric(f"ML 예측 합 ({unit_choice})", format_int(ml_pivot.to_numpy().sum() / unit_divisor))
-
     st.markdown("#### 센터 메타")
     meta_rows = []
     for center_code in center_codes:
@@ -1628,14 +1675,26 @@ def render_md_order_simulation_tab(
         meta_rows.append(
             {
                 "구분": center_names.get(center_code, center_code),
-                "가중치 (W)": config.get("weight", 1.0),
+                "가중치 (W)": center_weight_lookup.get(center_code, 1.0),
                 "점포수": config.get("store_count", "-"),
             }
         )
     meta_df = pd.DataFrame(meta_rows).set_index("구분").T
     st.dataframe(meta_df, use_container_width=True, height=130)
 
-    st.markdown(f"#### MD 입력 매트릭스 ({unit_choice})")
+    matrix_title_col, matrix_action_col = st.columns([1, 0.48])
+    with matrix_title_col:
+        st.markdown(f"#### MD 입력 매트릭스 ({unit_choice})")
+    with matrix_action_col:
+        action_cols = st.columns(3)
+        if action_cols[0].button("편집", width="stretch", key="md_sim_edit_button"):
+            st.session_state[edit_key] = True
+        if action_cols[1].button("초기화", width="stretch", key="md_sim_reset_button"):
+            st.session_state[state_key] = default_md.copy()
+            st.session_state[edit_key] = False
+            st.rerun()
+        apply_clicked = action_cols[2].button("적용", width="stretch", key="md_sim_apply_button")
+
     st.caption("센터마다 모델 산출값(ML)은 잠금 열로 두고, MD 열만 편집합니다. 편집 버튼을 누른 뒤 수정하고 적용하면 신호 매트릭스가 갱신됩니다.")
     is_editing = st.session_state.get(edit_key, False)
     edited_df = st.data_editor(
@@ -1648,16 +1707,17 @@ def render_md_order_simulation_tab(
         key=f"md_sim_matrix_editor_{signature}_{'edit' if is_editing else 'view'}",
     )
 
+    live_md_pivot = pd.DataFrame(index=current_pivot.index, columns=center_codes, dtype=float)
+    for center_code in center_codes:
+        md_col = md_column_by_center[center_code]
+        live_md_pivot[center_code] = pd.to_numeric(edited_df[md_col], errors="coerce").fillna(0) * unit_divisor
+
     if apply_clicked:
-        applied = pd.DataFrame(index=current_pivot.index, columns=center_codes, dtype=float)
-        for center_code in center_codes:
-            md_col = md_column_by_center[center_code]
-            applied[center_code] = pd.to_numeric(edited_df[md_col], errors="coerce").fillna(0) * unit_divisor
-        st.session_state[state_key] = applied
+        st.session_state[state_key] = live_md_pivot.copy()
         st.session_state[edit_key] = False
         st.rerun()
 
-    md_pivot = st.session_state[state_key].reindex_like(current_pivot).fillna(0)
+    md_pivot = live_md_pivot.reindex_like(current_pivot).fillna(0)
     ratio = md_pivot / ml_pivot.replace(0, pd.NA)
     signal = pd.DataFrame("-", index=ratio.index, columns=ratio.columns)
     signal[(ratio >= 0.5) & (ratio <= 2.0)] = "정상"
