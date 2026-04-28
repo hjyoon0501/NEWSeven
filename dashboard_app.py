@@ -1692,20 +1692,89 @@ def render_md_order_simulation_tab(
     st.dataframe(styled_signal, use_container_width=True, height=360, hide_index=True)
 
 
+_PLT_W_CM = 110.0
+_PLT_D_CM = 110.0
+_PLT_MAX_H_CM = 120.0
+_MIN_DIM_CM = 3.0
+DEFAULT_PALLET_DAILY_COST = 2035
+DEFAULT_BOX_HANDLING_COST = 90
+DEFAULT_ANNUAL_RATE = 0.05
+
+
+@st.cache_data(show_spinner=False)
+def load_item_dimension_master() -> pd.DataFrame:
+    if not MASTER_ITEM_PATH.exists():
+        return pd.DataFrame(columns=["ITEM_CODE", "CALC_EA_PER_PALLET", "CALC_OB_QTY"])
+
+    requested_cols = [
+        "ITEM_CD",
+        "ITEM_WDTH_LENG",
+        "ITEM_HGHT_LENG",
+        "ITEM_HG",
+        "OB_WDTH_LENG",
+        "OB_HGHT_LENG",
+        "OB_HG",
+        "OB_OBT_QTY",
+        "PLLT_OBT_QTY",
+        "PLLT_TSNG_QTY",
+    ]
+    available_cols = pd.read_csv(MASTER_ITEM_PATH, nrows=0).columns.tolist()
+    df = pd.read_csv(MASTER_ITEM_PATH, usecols=[col for col in requested_cols if col in available_cols])
+    if "ITEM_CD" not in df.columns:
+        return pd.DataFrame(columns=["ITEM_CODE", "CALC_EA_PER_PALLET", "CALC_OB_QTY"])
+
+    for col in df.columns.difference(["ITEM_CD"]):
+        df[col] = pd.to_numeric(df[col].astype(str).str.replace(",", ""), errors="coerce").fillna(0)
+    df["ITEM_CODE"] = df["ITEM_CD"].astype(str).str.strip()
+
+    def _ea_per_pallet(row: pd.Series) -> float:
+        if row.get("PLLT_OBT_QTY", 0) > 0:
+            return float(row["PLLT_OBT_QTY"])
+
+        outer_w = row.get("OB_WDTH_LENG", 0)
+        outer_d = row.get("OB_HGHT_LENG", 0)
+        outer_h = row.get("OB_HG", 0)
+        outer_qty = row.get("OB_OBT_QTY", 0)
+        if outer_w >= _MIN_DIM_CM and outer_d >= _MIN_DIM_CM and outer_h >= _MIN_DIM_CM and outer_qty > 0:
+            per_layer = np.floor(_PLT_W_CM / outer_w) * np.floor(_PLT_D_CM / outer_d)
+            stack_layers = row.get("PLLT_TSNG_QTY", 0)
+            layers = stack_layers if stack_layers > 0 else np.floor(_PLT_MAX_H_CM / outer_h)
+            return max(float(per_layer), 1) * max(float(layers), 1) * outer_qty
+
+        item_w = row.get("ITEM_WDTH_LENG", 0)
+        item_d = row.get("ITEM_HGHT_LENG", 0)
+        item_h = row.get("ITEM_HG", 0)
+        if item_w >= _MIN_DIM_CM and item_d >= _MIN_DIM_CM and item_h >= _MIN_DIM_CM:
+            per_layer = np.floor(_PLT_W_CM / item_w) * np.floor(_PLT_D_CM / item_d)
+            layers = np.floor(_PLT_MAX_H_CM / item_h)
+            return max(float(per_layer), 1) * max(float(layers), 1)
+        return np.nan
+
+    df["CALC_EA_PER_PALLET"] = df.apply(_ea_per_pallet, axis=1)
+    median_ea = df["CALC_EA_PER_PALLET"].median()
+    df["CALC_EA_PER_PALLET"] = df["CALC_EA_PER_PALLET"].fillna(median_ea).clip(lower=1.0)
+    if "OB_OBT_QTY" in df.columns:
+        df["CALC_OB_QTY"] = df["OB_OBT_QTY"].where(df["OB_OBT_QTY"] > 0, 1.0)
+    else:
+        df["CALC_OB_QTY"] = 1.0
+
+    return df[["ITEM_CODE", "CALC_EA_PER_PALLET", "CALC_OB_QTY"]].drop_duplicates("ITEM_CODE")
+
+
+@st.cache_data(show_spinner=False)
 def build_inventory_cost_dataset(
     stock_df: pd.DataFrame,
     sales_df: pd.DataFrame,
     center_order_df: pd.DataFrame,
     preorder_df: pd.DataFrame,
     pallet_daily_cost: float,
-    pallet_unit_qty: float,
     box_handling_cost: float,
-    box_unit_qty: float,
     annual_interest_rate: float,
 ) -> pd.DataFrame:
     if stock_df.empty:
         return pd.DataFrame()
 
+    dim_master = load_item_dimension_master()
     item_meta = (
         preorder_df[
             ["ITEM_CODE", "ITEM_NM", "BRAND", "ITEM_MDDV_NM", "ITEM_SMDV_NM", "ST_CPM_AMT", "ST_SLEM_AMT"]
@@ -1720,8 +1789,14 @@ def build_inventory_cost_dataset(
 
     cost_df = stock_df.copy()
     cost_df["CENTER_CODE"] = cost_df["CENTER_CODE"].map(normalize_center_code)
-    cost_df = cost_df.merge(item_meta, on="ITEM_CODE", how="left").merge(center_meta, on="CENTER_CODE", how="left")
+    cost_df = (
+        cost_df.merge(item_meta, on="ITEM_CODE", how="left")
+        .merge(dim_master, on="ITEM_CODE", how="left")
+        .merge(center_meta, on="CENTER_CODE", how="left")
+    )
     cost_df["CENTER_NM"] = cost_df["CENTER_NM"].fillna(cost_df["CENTER_CODE"])
+    cost_df["CALC_EA_PER_PALLET"] = cost_df["CALC_EA_PER_PALLET"].fillna(1.0).clip(lower=1.0)
+    cost_df["CALC_OB_QTY"] = cost_df["CALC_OB_QTY"].fillna(1.0).clip(lower=1.0)
     cost_df["ST_CPM_AMT"] = pd.to_numeric(cost_df["ST_CPM_AMT"], errors="coerce").fillna(0)
     cost_df["ST_SLEM_AMT"] = pd.to_numeric(cost_df["ST_SLEM_AMT"], errors="coerce").fillna(0)
 
@@ -1749,20 +1824,73 @@ def build_inventory_cost_dataset(
     for col in ["DAILY_OUTBOUND_QTY", "DAILY_INBOUND_QTY", "BOOK_END_QTY"]:
         cost_df[col] = pd.to_numeric(cost_df[col], errors="coerce").fillna(0)
 
-    safe_pallet_qty = max(float(pallet_unit_qty), 1.0)
-    safe_box_qty = max(float(box_unit_qty), 1.0)
+    cost_df = cost_df.sort_values(["ITEM_CODE", "CENTER_NM", "BIZ_DT"]).reset_index(drop=True)
+
+    def _weighted_avg(series: pd.Series, window: int) -> pd.Series:
+        weights = np.arange(1, window + 1, dtype=float)
+
+        def _wa(values: np.ndarray) -> float:
+            if len(values) == 0:
+                return np.nan
+            scoped_weights = weights[-len(values):]
+            return float(np.dot(values, scoped_weights) / scoped_weights.sum())
+
+        return series.rolling(window=window, min_periods=1).apply(_wa, raw=True)
+
+    grouped = cost_df.groupby(["ITEM_CODE", "CENTER_NM"], group_keys=False)
+    cost_df["SALE_VEL_3D"] = (
+        grouped[["DAILY_OUTBOUND_QTY", "BOOK_END_QTY"]]
+        .apply(lambda df: _weighted_avg(df["DAILY_OUTBOUND_QTY"].where(df["BOOK_END_QTY"] > 0).ffill(), window=3))
+        .reset_index(level=[0, 1], drop=True)
+        .reindex(cost_df.index)
+        .fillna(0)
+    )
+    cost_df["SALE_VEL_7D"] = (
+        grouped[["DAILY_OUTBOUND_QTY", "BOOK_END_QTY"]]
+        .apply(lambda df: _weighted_avg(df["DAILY_OUTBOUND_QTY"].where(df["BOOK_END_QTY"] > 0).ffill(), window=7))
+        .reset_index(level=[0, 1], drop=True)
+        .reindex(cost_df.index)
+        .fillna(0)
+    )
+    cost_df["SALE_ACCEL"] = cost_df["SALE_VEL_3D"] - cost_df["SALE_VEL_7D"]
+    cost_df["EST_DAILY_DEMAND"] = np.where(
+        cost_df["SALE_VEL_7D"] > 0,
+        cost_df["SALE_VEL_7D"],
+        cost_df["SALE_VEL_3D"],
+    )
+
     daily_rate = float(annual_interest_rate) / 365
 
-    cost_df["PALLET_COUNT"] = np.ceil(cost_df["BOOK_END_QTY"].clip(lower=0) / safe_pallet_qty)
+    cost_df["PALLET_COUNT"] = np.ceil(cost_df["BOOK_END_QTY"].clip(lower=0) / cost_df["CALC_EA_PER_PALLET"])
     cost_df["STORAGE_COST"] = cost_df["PALLET_COUNT"] * pallet_daily_cost
-    cost_df["OUTBOUND_BOX_COUNT"] = np.ceil(cost_df["DAILY_OUTBOUND_QTY"].clip(lower=0) / safe_box_qty)
-    cost_df["INBOUND_BOX_COUNT"] = np.ceil(cost_df["DAILY_INBOUND_QTY"].clip(lower=0) / safe_box_qty)
+    cost_df["OUTBOUND_BOX_COUNT"] = np.ceil(cost_df["DAILY_OUTBOUND_QTY"].clip(lower=0) / cost_df["CALC_OB_QTY"])
+    cost_df["INBOUND_BOX_COUNT"] = np.ceil(cost_df["DAILY_INBOUND_QTY"].clip(lower=0) / cost_df["CALC_OB_QTY"])
     cost_df["OUTBOUND_HANDLING_COST"] = cost_df["OUTBOUND_BOX_COUNT"] * box_handling_cost
     cost_df["INBOUND_HANDLING_COST"] = cost_df["INBOUND_BOX_COUNT"] * box_handling_cost
     cost_df["INVENTORY_VALUE"] = cost_df["BOOK_END_QTY"] * cost_df["ST_CPM_AMT"]
     cost_df["CAPITAL_COST"] = cost_df["INVENTORY_VALUE"] * daily_rate
     cost_df["TOTAL_HANDLING_COST"] = cost_df["OUTBOUND_HANDLING_COST"] + cost_df["INBOUND_HANDLING_COST"]
-    cost_df["DAILY_TOTAL_COST"] = cost_df["STORAGE_COST"] + cost_df["TOTAL_HANDLING_COST"] + cost_df["CAPITAL_COST"]
+    cost_df["MARGIN_PER_EA"] = (cost_df["ST_SLEM_AMT"] - cost_df["ST_CPM_AMT"]).clip(lower=0)
+    cost_df["STOCKOUT_OPP_COST"] = np.where(
+        (cost_df["BOOK_END_QTY"] == 0) & (cost_df["EST_DAILY_DEMAND"] > 0),
+        cost_df["EST_DAILY_DEMAND"] * cost_df["MARGIN_PER_EA"],
+        0.0,
+    )
+    cost_df["DAILY_TOTAL_COST"] = (
+        cost_df["STORAGE_COST"]
+        + cost_df["TOTAL_HANDLING_COST"]
+        + cost_df["CAPITAL_COST"]
+        + cost_df["STOCKOUT_OPP_COST"]
+    )
+    cost_df["STORAGE_COST_PER_EA"] = pallet_daily_cost / cost_df["CALC_EA_PER_PALLET"]
+    cost_df["HANDLING_COST_PER_EA"] = box_handling_cost / cost_df["CALC_OB_QTY"]
+    cost_df["CAPITAL_COST_PER_EA"] = cost_df["ST_CPM_AMT"] * daily_rate
+    cost_df["TOTAL_COST_PER_EA_PER_DAY"] = cost_df["STORAGE_COST_PER_EA"] + cost_df["CAPITAL_COST_PER_EA"]
+    cost_df["LOGISTICS_TO_SLEM_PCT"] = np.where(
+        cost_df["ST_SLEM_AMT"] > 0,
+        cost_df["TOTAL_COST_PER_EA_PER_DAY"] / cost_df["ST_SLEM_AMT"] * 100,
+        np.nan,
+    )
     return cost_df
 
 
@@ -1813,11 +1941,34 @@ def render_inventory_cost_page(
             key="inventory_cost_mddv",
         )
         st.divider()
-        pallet_daily_cost = st.slider("팔레트당 일 보관비", 100, 3000, 800, 50, key="inventory_cost_pallet_cost")
-        pallet_unit_qty = st.slider("팔레트 적재 EA", 10, 1000, 120, 10, key="inventory_cost_pallet_qty")
-        box_handling_cost = st.slider("박스당 하역비", 50, 2000, 500, 50, key="inventory_cost_box_cost")
-        box_unit_qty = st.slider("박스 입수 EA", 1, 200, 20, 1, key="inventory_cost_box_qty")
-        annual_interest_rate = st.slider("연 자본비용 이율 (%)", 0.0, 20.0, 5.0, 0.5, key="inventory_cost_rate") / 100
+        st.caption("파렛트·박스 입수량은 A7 상품마스터 치수 기반으로 상품별 자동 산출됩니다.")
+        pallet_daily_cost = st.slider(
+            "팔레트당 일 보관비 (원/PLT/일)",
+            100,
+            3000,
+            DEFAULT_PALLET_DAILY_COST,
+            50,
+            key="inventory_cost_pallet_cost",
+        )
+        box_handling_cost = st.slider(
+            "박스당 하역비 (원/박스, 편도)",
+            50,
+            500,
+            DEFAULT_BOX_HANDLING_COST,
+            10,
+            key="inventory_cost_box_cost",
+        )
+        annual_interest_rate = (
+            st.slider(
+                "연 자본비용 이율 (%)",
+                0.0,
+                20.0,
+                DEFAULT_ANNUAL_RATE * 100,
+                0.5,
+                key="inventory_cost_rate",
+            )
+            / 100
+        )
 
     cost_df = build_inventory_cost_dataset(
         stock_df,
@@ -1825,9 +1976,7 @@ def render_inventory_cost_page(
         center_order_df,
         preorder_df,
         pallet_daily_cost,
-        pallet_unit_qty,
         box_handling_cost,
-        box_unit_qty,
         annual_interest_rate,
     )
 
@@ -1855,7 +2004,7 @@ def render_inventory_cost_page(
     c3.metric("총 자본비용", format_won(total_capital))
     c4.metric("총 재고비용", format_won(total_cost))
 
-    tab1, tab2, tab3, tab4 = st.tabs(["비용 추이", "판매 vs 재고", "부진재고", "상세 데이터"])
+    tab1, tab2, tab3, tab4 = st.tabs(["비용 추이", "센터/상품별 비용", "부진재고", "상세 데이터"])
 
     with tab1:
         daily_cost = (
@@ -2084,43 +2233,114 @@ def render_inventory_cost_page(
         )
 
     with tab4:
-        detail_cols = [
-            "BIZ_DT",
-            "CENTER_NM",
-            "ITEM_CODE",
-            "ITEM_NM",
-            "BOOK_END_QTY",
-            "DAILY_OUTBOUND_QTY",
-            "DAILY_INBOUND_QTY",
-            "STORAGE_COST",
-            "TOTAL_HANDLING_COST",
-            "CAPITAL_COST",
-            "DAILY_TOTAL_COST",
-        ]
-        detail = filtered[[col for col in detail_cols if col in filtered.columns]].copy()
-        detail = detail.rename(
-            columns={
-                "BIZ_DT": "일자",
-                "CENTER_NM": "센터",
-                "ITEM_CODE": "상품코드",
-                "ITEM_NM": "상품명",
-                "BOOK_END_QTY": "기말재고",
-                "DAILY_OUTBOUND_QTY": "출고수량",
-                "DAILY_INBOUND_QTY": "입고수량",
-                "STORAGE_COST": "보관비",
-                "TOTAL_HANDLING_COST": "하역비",
-                "CAPITAL_COST": "자본비용",
-                "DAILY_TOTAL_COST": "총 재고비용",
-            }
-        )
-        st.dataframe(detail, use_container_width=True, height=460, hide_index=True)
-        st.download_button(
-            "상세 데이터 CSV 다운로드",
-            data=detail.to_csv(index=False).encode("utf-8-sig"),
-            file_name="inventory_cost_detail.csv",
-            mime="text/csv",
-            width="stretch",
-        )
+        subtab_agg, subtab_unit = st.tabs(["전체 비용 (일별)", "EA당 단위 비용"])
+
+        with subtab_agg:
+            detail_cols = [
+                "BIZ_DT",
+                "CENTER_NM",
+                "ITEM_CODE",
+                "ITEM_NM",
+                "BOOK_END_QTY",
+                "PALLET_COUNT",
+                "CALC_EA_PER_PALLET",
+                "DAILY_OUTBOUND_QTY",
+                "DAILY_INBOUND_QTY",
+                "STORAGE_COST",
+                "TOTAL_HANDLING_COST",
+                "CAPITAL_COST",
+                "STOCKOUT_OPP_COST",
+                "DAILY_TOTAL_COST",
+            ]
+            detail = filtered[[col for col in detail_cols if col in filtered.columns]].copy()
+            detail = detail.rename(
+                columns={
+                    "BIZ_DT": "일자",
+                    "CENTER_NM": "센터",
+                    "ITEM_CODE": "상품코드",
+                    "ITEM_NM": "상품명",
+                    "BOOK_END_QTY": "기말재고",
+                    "PALLET_COUNT": "파렛트수",
+                    "CALC_EA_PER_PALLET": "파렛트당EA",
+                    "DAILY_OUTBOUND_QTY": "출고수량",
+                    "DAILY_INBOUND_QTY": "입고수량",
+                    "STORAGE_COST": "보관비",
+                    "TOTAL_HANDLING_COST": "하역비",
+                    "CAPITAL_COST": "자본비용",
+                    "STOCKOUT_OPP_COST": "결품기회비용",
+                    "DAILY_TOTAL_COST": "총 재고비용",
+                }
+            )
+            st.dataframe(detail, use_container_width=True, height=460, hide_index=True)
+            st.download_button(
+                "전체 비용 CSV 다운로드",
+                data=detail.to_csv(index=False).encode("utf-8-sig"),
+                file_name="inventory_cost_detail.csv",
+                mime="text/csv",
+                width="stretch",
+            )
+
+        with subtab_unit:
+            st.caption(
+                "상품 1EA를 기준으로 한 단위 비용입니다. 보관비·자본비용은 1일 기준, 하역비는 편도 1회 기준입니다."
+            )
+            unit_cols = [
+                "ITEM_CODE",
+                "ITEM_NM",
+                "ST_CPM_AMT",
+                "ST_SLEM_AMT",
+                "CALC_EA_PER_PALLET",
+                "CALC_OB_QTY",
+                "STORAGE_COST_PER_EA",
+                "HANDLING_COST_PER_EA",
+                "CAPITAL_COST_PER_EA",
+                "TOTAL_COST_PER_EA_PER_DAY",
+                "LOGISTICS_TO_SLEM_PCT",
+            ]
+            unit_df = (
+                filtered[[col for col in unit_cols if col in filtered.columns]]
+                .drop_duplicates("ITEM_CODE")
+                .sort_values("TOTAL_COST_PER_EA_PER_DAY", ascending=False)
+            )
+            unit_df = unit_df.rename(
+                columns={
+                    "ITEM_CODE": "상품코드",
+                    "ITEM_NM": "상품명",
+                    "ST_CPM_AMT": "원가(EA)",
+                    "ST_SLEM_AMT": "매가(EA)",
+                    "CALC_EA_PER_PALLET": "파렛트당EA",
+                    "CALC_OB_QTY": "외박스당EA",
+                    "STORAGE_COST_PER_EA": "보관비/EA/일(원)",
+                    "HANDLING_COST_PER_EA": "하역비/EA/편도(원)",
+                    "CAPITAL_COST_PER_EA": "자본비용/EA/일(원)",
+                    "TOTAL_COST_PER_EA_PER_DAY": "총물류비/EA/일(원)",
+                    "LOGISTICS_TO_SLEM_PCT": "매가대비일물류비(%)",
+                }
+            )
+            st.dataframe(
+                unit_df,
+                use_container_width=True,
+                height=460,
+                hide_index=True,
+                column_config={
+                    "원가(EA)": st.column_config.NumberColumn("원가(EA)", format="%,.0f"),
+                    "매가(EA)": st.column_config.NumberColumn("매가(EA)", format="%,.0f"),
+                    "파렛트당EA": st.column_config.NumberColumn("파렛트당EA", format="%.0f"),
+                    "외박스당EA": st.column_config.NumberColumn("외박스당EA", format="%.0f"),
+                    "보관비/EA/일(원)": st.column_config.NumberColumn("보관비/EA/일", format="%.2f"),
+                    "하역비/EA/편도(원)": st.column_config.NumberColumn("하역비/EA/편도", format="%.2f"),
+                    "자본비용/EA/일(원)": st.column_config.NumberColumn("자본비용/EA/일", format="%.2f"),
+                    "총물류비/EA/일(원)": st.column_config.NumberColumn("총물류비/EA/일", format="%.2f"),
+                    "매가대비일물류비(%)": st.column_config.NumberColumn("매가대비 일물류비(%)", format="%.3f"),
+                },
+            )
+            st.download_button(
+                "EA당 단위비용 CSV 다운로드",
+                data=unit_df.to_csv(index=False).encode("utf-8-sig"),
+                file_name="unit_cost_per_ea.csv",
+                mime="text/csv",
+                width="stretch",
+            )
 
 
 @st.cache_data(show_spinner=False)
@@ -3830,7 +4050,7 @@ if selected_page == "과거 신상품 조회":
         ]
         for label, connected in status_items:
             if connected:
-                st.success(f"{label}: 연결됨")
+                st.info(f"{label}: 연결됨")
             else:
                 st.warning(f"{label}: 없음")
 
@@ -3853,7 +4073,7 @@ if selected_page == "MD 발주 시뮬레이션":
         ]
         for label, connected in status_items:
             if connected:
-                st.success(f"{label}: 연결됨")
+                st.info(f"{label}: 연결됨")
             else:
                 st.warning(f"{label}: 없음")
 
