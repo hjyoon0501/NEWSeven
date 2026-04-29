@@ -910,6 +910,25 @@ def render_kpi_card(label: str, value: str, subtext: str) -> None:
     )
 
 
+def lazy_view_selector(label: str, options: list[str], key: str) -> str:
+    if hasattr(st, "segmented_control"):
+        selected = st.segmented_control(
+            label,
+            options=options,
+            default=options[0],
+            key=key,
+            label_visibility="collapsed",
+        )
+        return selected or options[0]
+    return st.radio(
+        label,
+        options,
+        horizontal=True,
+        label_visibility="collapsed",
+        key=key,
+    )
+
+
 def style_figure(fig):
     fig.update_layout(
         template="plotly_white",
@@ -1318,7 +1337,10 @@ def load_preorder() -> pd.DataFrame:
 
 @st.cache_data(show_spinner=False)
 def load_sales() -> pd.DataFrame:
-    df = pd.read_csv(SALES_PATH)
+    df = pd.read_csv(
+        SALES_PATH,
+        usecols=["ITEM_CD", "CENT_NM", "판매일자", "CENTER_SALE_QTY", "CENTER_SALE_AMT_VAT", "Ratio"],
+    )
     df["ITEM_CODE"] = df["ITEM_CD"].astype(str).str.strip()
     df["CENTER_NM"] = df["CENT_NM"].astype(str).str.strip()
     df["SALE_DATE"] = pd.to_datetime(df["판매일자"], errors="coerce")
@@ -1330,7 +1352,10 @@ def load_sales() -> pd.DataFrame:
 
 @st.cache_data(show_spinner=False)
 def load_stock() -> pd.DataFrame:
-    df = pd.read_csv(STOCK_PATH)
+    df = pd.read_csv(
+        STOCK_PATH,
+        usecols=["ITEM_CODE", "CENTER_CODE", "BIZ_DATE", "BOOK_END_QTY"],
+    )
     df["ITEM_CODE"] = df["ITEM_CODE"].astype(str).str.strip()
     df["CENTER_CODE"] = df["CENTER_CODE"].map(normalize_center_code)
     df["BIZ_DT"] = pd.to_datetime(df["BIZ_DATE"].astype(str), format="%Y%m%d", errors="coerce")
@@ -1342,7 +1367,9 @@ def load_stock() -> pd.DataFrame:
 def load_center_order() -> pd.DataFrame:
     if not CENTER_ORDER_PATH.exists():
         return pd.DataFrame()
-    df = pd.read_csv(CENTER_ORDER_PATH)
+    requested_cols = ["ITEM_CD", "CENT_CD", "SUM(A.CONV_QTY)", "ORD_YMD"]
+    available_cols = pd.read_csv(CENTER_ORDER_PATH, nrows=0).columns.tolist()
+    df = pd.read_csv(CENTER_ORDER_PATH, usecols=[col for col in requested_cols if col in available_cols])
     if "ITEM_CD" in df.columns:
         df["ITEM_CODE"] = df["ITEM_CD"].astype(str).str.strip()
     if "CENT_CD" in df.columns:
@@ -2118,9 +2145,13 @@ def render_inventory_cost_page(
     c3.metric("총 자본비용", format_won(total_capital))
     c4.metric("총 재고비용", format_won(total_cost))
 
-    tab1, tab2, tab3, tab4 = st.tabs(["비용 추이", "센터/상품별 비용", "부진재고", "상세 데이터"])
+    inventory_view = lazy_view_selector(
+        "재고비용 보기",
+        ["비용 추이", "센터/상품별 비용", "부진재고", "상세 데이터"],
+        key="inventory_cost_view",
+    )
 
-    with tab1:
+    if inventory_view == "비용 추이":
         daily_cost = (
             filtered.groupby("BIZ_DT", as_index=False)[
                 ["STORAGE_COST", "TOTAL_HANDLING_COST", "CAPITAL_COST", "DAILY_TOTAL_COST"]
@@ -2192,7 +2223,7 @@ def render_inventory_cost_page(
             fig_s.update_layout(showlegend=False)
             st.plotly_chart(fig_s, use_container_width=True)
 
-    with tab2:
+    if inventory_view == "센터/상품별 비용":
         center_cost = (
             filtered.groupby("CENTER_NM", as_index=False)["DAILY_TOTAL_COST"]
             .sum()
@@ -2238,7 +2269,7 @@ def render_inventory_cost_page(
                 hide_index=True,
             )
 
-    with tab3:
+    if inventory_view == "부진재고":
         latest_date = filtered["BIZ_DT"].max()
         latest_stock = (
             filtered[filtered["BIZ_DT"] == latest_date]
@@ -2358,7 +2389,7 @@ def render_inventory_cost_page(
             hide_index=True,
         )
 
-    with tab4:
+    if inventory_view == "상세 데이터":
         subtab_agg, subtab_unit = st.tabs(["전체 비용 (일별)", "EA당 단위 비용"])
 
         with subtab_agg:
@@ -4075,33 +4106,20 @@ def render_past_dashboard_page(
     base_date: pd.Timestamp,
 ) -> None:
     st.markdown("## 과거 신상품 조회")
-    tabs = st.tabs(
-        ["과거 신상품 조회", "과거 Raw Data", "상품별 데이터", "상품별 상태 분석"]
+    past_view = lazy_view_selector(
+        "과거 신상품 조회 보기",
+        ["과거 신상품 조회", "과거 Raw Data", "상품별 데이터", "상품별 상태 분석"],
+        key="past_dashboard_view",
     )
-    with tabs[0]:
+    if past_view == "과거 신상품 조회":
         render_past_lookup_overview(preorder_df, sales_df, predictions_df)
-    with tabs[1]:
+    elif past_view == "과거 Raw Data":
         render_past_raw_data_tab(preorder_df, sales_df, center_order_df, stock_df, base_date)
-    with tabs[2]:
+    elif past_view == "상품별 데이터":
         render_past_product_data_detail(preorder_df, sales_df, predictions_df)
-    with tabs[3]:
+    else:
         render_past_status_analysis_tab(preorder_df, sales_df, predictions_df)
 
-
-preorder_df = load_preorder()
-sales_df = load_sales()
-stock_df = load_stock()
-center_order_df = load_center_order()
-predictions_df = load_predictions()
-item_master = build_item_master(preorder_df)
-center_master = build_center_master(preorder_df)
-
-full_preorder_df = preorder_df.copy()
-full_sales_df = sales_df.copy()
-full_stock_df = stock_df.copy()
-full_center_order_df = center_order_df.copy()
-full_predictions_df = predictions_df.copy()
-full_item_master = item_master.copy()
 
 inject_theme()
 
@@ -4116,13 +4134,29 @@ if st.session_state.get("app_session_version") != APP_SESSION_VERSION:
     st.session_state.pop("login_user", None)
     st.session_state.pop("weekly_selected_item", None)
 
+login_md_map = load_item_md_mapping()
 st.session_state["valid_md_ids"] = set(
-    item_master.loc[item_master["REG_USER_ID"].ne("unassigned"), "REG_USER_ID"].dropna().tolist()
+    login_md_map.loc[login_md_map["REG_USER_ID"].ne("unassigned"), "REG_USER_ID"].dropna().tolist()
 )
 
 if not st.session_state["is_logged_in"]:
     render_login_screen()
     st.stop()
+
+preorder_df = load_preorder()
+sales_df = load_sales()
+stock_df = load_stock()
+center_order_df = load_center_order()
+predictions_df = load_predictions()
+item_master = build_item_master(preorder_df)
+center_master = build_center_master(preorder_df)
+
+full_preorder_df = preorder_df
+full_sales_df = sales_df
+full_stock_df = stock_df
+full_center_order_df = center_order_df
+full_predictions_df = predictions_df
+full_item_master = item_master
 
 logged_user = st.session_state.get("login_user", "").strip().lower()
 is_master_user = st.session_state.get("is_master_user", False)
