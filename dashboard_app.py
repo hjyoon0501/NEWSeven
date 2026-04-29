@@ -46,6 +46,20 @@ W_RECOMMEND_CANDIDATES = [
     DATA_DIR / "W_RECOMMEND.xlsx",
 ]
 
+
+def file_signature(path: Path) -> tuple[str, int, int]:
+    try:
+        stat = path.stat()
+    except FileNotFoundError:
+        return (str(path), -1, -1)
+    return (str(path), int(stat.st_size), int(stat.st_mtime_ns))
+
+
+def first_existing_file_signature(paths: list[Path]) -> tuple[str, int, int]:
+    path = next((candidate for candidate in paths if candidate.exists()), paths[0])
+    return file_signature(path)
+
+
 MASTER_ACCOUNT_ID = "master"
 MASTER_ACCOUNT_PASSWORD = "master123!"
 APP_SESSION_VERSION = "md-login-v2"
@@ -910,6 +924,25 @@ def render_kpi_card(label: str, value: str, subtext: str) -> None:
     )
 
 
+def lazy_view_selector(label: str, options: list[str], key: str) -> str:
+    if hasattr(st, "segmented_control"):
+        selected = st.segmented_control(
+            label,
+            options=options,
+            default=options[0],
+            key=key,
+            label_visibility="collapsed",
+        )
+        return selected or options[0]
+    return st.radio(
+        label,
+        options,
+        horizontal=True,
+        label_visibility="collapsed",
+        key=key,
+    )
+
+
 def style_figure(fig):
     fig.update_layout(
         template="plotly_white",
@@ -1052,7 +1085,7 @@ def build_center_map_view(center_plan: pd.DataFrame, center_locations: pd.DataFr
     return mapped.dropna(subset=["LAT", "LON"]).copy()
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, persist="disk")
 def build_preorder_sales_analysis(preorder_df: pd.DataFrame, sales_df: pd.DataFrame) -> pd.DataFrame:
     preorder = preorder_df.copy()
     sales = sales_df.copy()
@@ -1262,8 +1295,8 @@ def render_login_screen() -> None:
         )
 
 
-@st.cache_data(show_spinner=False)
-def load_item_md_mapping() -> pd.DataFrame:
+@st.cache_data(show_spinner=False, persist="disk")
+def load_item_md_mapping(cache_sig: tuple[str, int, int]) -> pd.DataFrame:
     df = pd.read_csv(
         MASTER_ITEM_PATH,
         usecols=["ITEM_CD", "REG_USER_ID", "ITEM_CRTR_CN"],
@@ -1277,8 +1310,8 @@ def load_item_md_mapping() -> pd.DataFrame:
     return df[["ITEM_CODE", "REG_USER_ID", "ITEM_CRTR_CN", "ITEM_CRTR_SUMMARY"]].drop_duplicates()
 
 
-@st.cache_data(show_spinner=False)
-def load_preorder() -> pd.DataFrame:
+@st.cache_data(show_spinner=False, persist="disk")
+def load_preorder(cache_sig: tuple[str, int, int]) -> pd.DataFrame:
     df = pd.read_csv(PREORDER_PATH)
     numeric_cols = [
         "GOAL_INTRO_RT",
@@ -1316,9 +1349,12 @@ def load_preorder() -> pd.DataFrame:
     return df
 
 
-@st.cache_data(show_spinner=False)
-def load_sales() -> pd.DataFrame:
-    df = pd.read_csv(SALES_PATH)
+@st.cache_data(show_spinner=False, persist="disk")
+def load_sales(cache_sig: tuple[str, int, int]) -> pd.DataFrame:
+    df = pd.read_csv(
+        SALES_PATH,
+        usecols=["ITEM_CD", "CENT_NM", "판매일자", "CENTER_SALE_QTY", "CENTER_SALE_AMT_VAT", "Ratio"],
+    )
     df["ITEM_CODE"] = df["ITEM_CD"].astype(str).str.strip()
     df["CENTER_NM"] = df["CENT_NM"].astype(str).str.strip()
     df["SALE_DATE"] = pd.to_datetime(df["판매일자"], errors="coerce")
@@ -1328,9 +1364,12 @@ def load_sales() -> pd.DataFrame:
     return df
 
 
-@st.cache_data(show_spinner=False)
-def load_stock() -> pd.DataFrame:
-    df = pd.read_csv(STOCK_PATH)
+@st.cache_data(show_spinner=False, persist="disk")
+def load_stock(cache_sig: tuple[str, int, int]) -> pd.DataFrame:
+    df = pd.read_csv(
+        STOCK_PATH,
+        usecols=["ITEM_CODE", "CENTER_CODE", "BIZ_DATE", "BOOK_END_QTY"],
+    )
     df["ITEM_CODE"] = df["ITEM_CODE"].astype(str).str.strip()
     df["CENTER_CODE"] = df["CENTER_CODE"].map(normalize_center_code)
     df["BIZ_DT"] = pd.to_datetime(df["BIZ_DATE"].astype(str), format="%Y%m%d", errors="coerce")
@@ -1338,11 +1377,13 @@ def load_stock() -> pd.DataFrame:
     return df
 
 
-@st.cache_data(show_spinner=False)
-def load_center_order() -> pd.DataFrame:
+@st.cache_data(show_spinner=False, persist="disk")
+def load_center_order(cache_sig: tuple[str, int, int]) -> pd.DataFrame:
     if not CENTER_ORDER_PATH.exists():
         return pd.DataFrame()
-    df = pd.read_csv(CENTER_ORDER_PATH)
+    requested_cols = ["ITEM_CD", "CENT_CD", "SUM(A.CONV_QTY)", "ORD_YMD"]
+    available_cols = pd.read_csv(CENTER_ORDER_PATH, nrows=0).columns.tolist()
+    df = pd.read_csv(CENTER_ORDER_PATH, usecols=[col for col in requested_cols if col in available_cols])
     if "ITEM_CD" in df.columns:
         df["ITEM_CODE"] = df["ITEM_CD"].astype(str).str.strip()
     if "CENT_CD" in df.columns:
@@ -1356,8 +1397,8 @@ def load_center_order() -> pd.DataFrame:
     return df
 
 
-@st.cache_data(show_spinner=False)
-def load_predictions() -> pd.DataFrame:
+@st.cache_data(show_spinner=False, persist="disk")
+def load_predictions(cache_sig: tuple[str, int, int]) -> pd.DataFrame:
     predictions_path = PREDICTIONS_PATH if PREDICTIONS_PATH.exists() else DATA_DIR / "predictions.parquet"
     if not predictions_path.exists():
         return pd.DataFrame()
@@ -1414,6 +1455,7 @@ def build_outflow_7d_summary(
     )
 
 
+@st.cache_data(show_spinner=False, persist="disk")
 def build_prediction_initial_outflow_scatter(
     predictions_df: pd.DataFrame,
     preorder_df: pd.DataFrame,
@@ -1464,6 +1506,7 @@ def build_prediction_initial_outflow_scatter(
     return scatter_df
 
 
+@st.cache_data(show_spinner=False, persist="disk")
 def build_prediction_simulation_base(
     predictions_df: pd.DataFrame,
     preorder_df: pd.DataFrame,
@@ -1496,8 +1539,8 @@ def build_prediction_simulation_base(
     return base
 
 
-@st.cache_data(show_spinner=False)
-def load_w_recommend() -> pd.DataFrame:
+@st.cache_data(show_spinner=False, persist="disk")
+def load_w_recommend(cache_sig: tuple[str, int, int]) -> pd.DataFrame:
     recommend_path = next((path for path in W_RECOMMEND_CANDIDATES if path.exists()), None)
     if recommend_path is None:
         return pd.DataFrame()
@@ -1538,7 +1581,7 @@ def build_center_weight_lookup(center_codes: list[str]) -> dict[str, float]:
         center_code: float(CENTER_WEIGHT_CONFIG.get(center_code, {}).get("weight", 1.0))
         for center_code in center_codes
     }
-    recommend_df = load_w_recommend()
+    recommend_df = load_w_recommend(first_existing_file_signature(W_RECOMMEND_CANDIDATES))
     if not recommend_df.empty:
         recommended = recommend_df.set_index("CENTER_CODE")["W_RECOMMEND"].to_dict()
         for center_code in center_codes:
@@ -1818,8 +1861,8 @@ INVENTORY_DETAIL_DISPLAY_ROWS = 5_000
 INVENTORY_DETAIL_DOWNLOAD_ROWS = 50_000
 
 
-@st.cache_data(show_spinner=False)
-def load_item_dimension_master() -> pd.DataFrame:
+@st.cache_data(show_spinner=False, persist="disk")
+def load_item_dimension_master(cache_sig: tuple[str, int, int]) -> pd.DataFrame:
     if not MASTER_ITEM_PATH.exists():
         return pd.DataFrame(columns=["ITEM_CODE", "CALC_EA_PER_PALLET", "CALC_OB_QTY"])
 
@@ -1878,7 +1921,7 @@ def load_item_dimension_master() -> pd.DataFrame:
     return df[["ITEM_CODE", "CALC_EA_PER_PALLET", "CALC_OB_QTY"]].drop_duplicates("ITEM_CODE")
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, persist="disk")
 def build_inventory_cost_dataset(
     stock_df: pd.DataFrame,
     sales_df: pd.DataFrame,
@@ -1891,7 +1934,7 @@ def build_inventory_cost_dataset(
     if stock_df.empty:
         return pd.DataFrame()
 
-    dim_master = load_item_dimension_master()
+    dim_master = load_item_dimension_master(file_signature(MASTER_ITEM_PATH))
     item_meta = (
         preorder_df[
             ["ITEM_CODE", "ITEM_NM", "BRAND", "ITEM_MDDV_NM", "ITEM_SMDV_NM", "ST_CPM_AMT", "ST_SLEM_AMT"]
@@ -2118,9 +2161,13 @@ def render_inventory_cost_page(
     c3.metric("총 자본비용", format_won(total_capital))
     c4.metric("총 재고비용", format_won(total_cost))
 
-    tab1, tab2, tab3, tab4 = st.tabs(["비용 추이", "센터/상품별 비용", "부진재고", "상세 데이터"])
+    inventory_view = lazy_view_selector(
+        "재고비용 보기",
+        ["비용 추이", "센터/상품별 비용", "부진재고", "상세 데이터"],
+        key="inventory_cost_view",
+    )
 
-    with tab1:
+    if inventory_view == "비용 추이":
         daily_cost = (
             filtered.groupby("BIZ_DT", as_index=False)[
                 ["STORAGE_COST", "TOTAL_HANDLING_COST", "CAPITAL_COST", "DAILY_TOTAL_COST"]
@@ -2192,7 +2239,7 @@ def render_inventory_cost_page(
             fig_s.update_layout(showlegend=False)
             st.plotly_chart(fig_s, use_container_width=True)
 
-    with tab2:
+    if inventory_view == "센터/상품별 비용":
         center_cost = (
             filtered.groupby("CENTER_NM", as_index=False)["DAILY_TOTAL_COST"]
             .sum()
@@ -2238,7 +2285,7 @@ def render_inventory_cost_page(
                 hide_index=True,
             )
 
-    with tab3:
+    if inventory_view == "부진재고":
         latest_date = filtered["BIZ_DT"].max()
         latest_stock = (
             filtered[filtered["BIZ_DT"] == latest_date]
@@ -2358,7 +2405,7 @@ def render_inventory_cost_page(
             hide_index=True,
         )
 
-    with tab4:
+    if inventory_view == "상세 데이터":
         subtab_agg, subtab_unit = st.tabs(["전체 비용 (일별)", "EA당 단위 비용"])
 
         with subtab_agg:
@@ -2481,8 +2528,8 @@ def render_inventory_cost_page(
             )
 
 
-@st.cache_data(show_spinner=False)
-def load_center_locations() -> pd.DataFrame:
+@st.cache_data(show_spinner=False, persist="disk")
+def load_center_locations(cache_sig: tuple[str, int, int]) -> pd.DataFrame:
     if not CENTER_MAP_PATH.exists():
         return pd.DataFrame()
     df = pd.read_csv(CENTER_MAP_PATH, low_memory=False)
@@ -2507,9 +2554,9 @@ def load_center_locations() -> pd.DataFrame:
     return df[keep_cols].drop_duplicates()
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, persist="disk")
 def build_item_master(preorder_df: pd.DataFrame) -> pd.DataFrame:
-    md_map = load_item_md_mapping()
+    md_map = load_item_md_mapping(file_signature(MASTER_ITEM_PATH))
     item_master = (
         preorder_df.sort_values(["ITEM_CODE", "NP_RLSE_DATE"])
         .groupby("ITEM_CODE", as_index=False)
@@ -2541,7 +2588,7 @@ def build_item_master(preorder_df: pd.DataFrame) -> pd.DataFrame:
     return item_master.sort_values(["NP_RLSE_DATE", "ITEM_CODE"], ascending=[False, True])
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, persist="disk")
 def build_center_master(preorder_df: pd.DataFrame) -> pd.DataFrame:
     return (
         preorder_df[["CENTER_CODE", "CENTER_NM"]]
@@ -2691,7 +2738,7 @@ def build_item_summary(filtered_preorder: pd.DataFrame, filtered_sales: pd.DataF
     return summary.sort_values("INITIAL_ORD_QTY", ascending=False)
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, persist="disk")
 def build_past_reference_item_analysis(
     preorder_df: pd.DataFrame,
     sales_df: pd.DataFrame,
@@ -3737,6 +3784,7 @@ def render_past_current_release_focus(preorder_df: pd.DataFrame, base_date: pd.T
     st.dataframe(release_window[show_columns], width="stretch", height=360, hide_index=True)
 
 
+@st.cache_data(show_spinner=False, persist="disk")
 def build_past_item_status_df(
     preorder_df: pd.DataFrame,
     sales_df: pd.DataFrame,
@@ -4075,33 +4123,20 @@ def render_past_dashboard_page(
     base_date: pd.Timestamp,
 ) -> None:
     st.markdown("## 과거 신상품 조회")
-    tabs = st.tabs(
-        ["과거 신상품 조회", "과거 Raw Data", "상품별 데이터", "상품별 상태 분석"]
+    past_view = lazy_view_selector(
+        "과거 신상품 조회 보기",
+        ["과거 신상품 조회", "과거 Raw Data", "상품별 데이터", "상품별 상태 분석"],
+        key="past_dashboard_view",
     )
-    with tabs[0]:
+    if past_view == "과거 신상품 조회":
         render_past_lookup_overview(preorder_df, sales_df, predictions_df)
-    with tabs[1]:
+    elif past_view == "과거 Raw Data":
         render_past_raw_data_tab(preorder_df, sales_df, center_order_df, stock_df, base_date)
-    with tabs[2]:
+    elif past_view == "상품별 데이터":
         render_past_product_data_detail(preorder_df, sales_df, predictions_df)
-    with tabs[3]:
+    else:
         render_past_status_analysis_tab(preorder_df, sales_df, predictions_df)
 
-
-preorder_df = load_preorder()
-sales_df = load_sales()
-stock_df = load_stock()
-center_order_df = load_center_order()
-predictions_df = load_predictions()
-item_master = build_item_master(preorder_df)
-center_master = build_center_master(preorder_df)
-
-full_preorder_df = preorder_df.copy()
-full_sales_df = sales_df.copy()
-full_stock_df = stock_df.copy()
-full_center_order_df = center_order_df.copy()
-full_predictions_df = predictions_df.copy()
-full_item_master = item_master.copy()
 
 inject_theme()
 
@@ -4116,13 +4151,30 @@ if st.session_state.get("app_session_version") != APP_SESSION_VERSION:
     st.session_state.pop("login_user", None)
     st.session_state.pop("weekly_selected_item", None)
 
+login_md_map = load_item_md_mapping(file_signature(MASTER_ITEM_PATH))
 st.session_state["valid_md_ids"] = set(
-    item_master.loc[item_master["REG_USER_ID"].ne("unassigned"), "REG_USER_ID"].dropna().tolist()
+    login_md_map.loc[login_md_map["REG_USER_ID"].ne("unassigned"), "REG_USER_ID"].dropna().tolist()
 )
 
 if not st.session_state["is_logged_in"]:
     render_login_screen()
     st.stop()
+
+preorder_df = load_preorder(file_signature(PREORDER_PATH))
+sales_df = load_sales(file_signature(SALES_PATH))
+stock_df = load_stock(file_signature(STOCK_PATH))
+center_order_df = load_center_order(file_signature(CENTER_ORDER_PATH))
+predictions_source = PREDICTIONS_PATH if PREDICTIONS_PATH.exists() else DATA_DIR / "predictions.parquet"
+predictions_df = load_predictions(file_signature(predictions_source))
+item_master = build_item_master(preorder_df)
+center_master = build_center_master(preorder_df)
+
+full_preorder_df = preorder_df
+full_sales_df = sales_df
+full_stock_df = stock_df
+full_center_order_df = center_order_df
+full_predictions_df = predictions_df
+full_item_master = item_master
 
 logged_user = st.session_state.get("login_user", "").strip().lower()
 is_master_user = st.session_state.get("is_master_user", False)
@@ -4444,7 +4496,7 @@ else:
 
     selected_center_detail = build_item_center_preorder_detail(preorder_df, selected_weekly_item)
     selected_center_plan = build_center_initial_order_plan(selected_center_detail)
-    selected_center_map = build_center_map_view(selected_center_plan, load_center_locations())
+    selected_center_map = build_center_map_view(selected_center_plan, load_center_locations(file_signature(CENTER_MAP_PATH)))
     selected_profile = build_item_preorder_profile(preorder_df, selected_weekly_item)
     selected_center_profile = build_item_center_preorder_profile(preorder_df, selected_weekly_item)
     detail_analysis, detail_summary = build_item_detail_analysis(analysis_df, selected_weekly_item)
