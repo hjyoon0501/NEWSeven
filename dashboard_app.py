@@ -46,20 +46,6 @@ W_RECOMMEND_CANDIDATES = [
     DATA_DIR / "W_RECOMMEND.xlsx",
 ]
 
-
-def file_signature(path: Path) -> tuple[str, int, int]:
-    try:
-        stat = path.stat()
-    except FileNotFoundError:
-        return (str(path), -1, -1)
-    return (str(path), int(stat.st_size), int(stat.st_mtime_ns))
-
-
-def first_existing_file_signature(paths: list[Path]) -> tuple[str, int, int]:
-    path = next((candidate for candidate in paths if candidate.exists()), paths[0])
-    return file_signature(path)
-
-
 MASTER_ACCOUNT_ID = "master"
 MASTER_ACCOUNT_PASSWORD = "master123!"
 APP_SESSION_VERSION = "md-login-v2"
@@ -924,25 +910,6 @@ def render_kpi_card(label: str, value: str, subtext: str) -> None:
     )
 
 
-def lazy_view_selector(label: str, options: list[str], key: str) -> str:
-    if hasattr(st, "segmented_control"):
-        selected = st.segmented_control(
-            label,
-            options=options,
-            default=options[0],
-            key=key,
-            label_visibility="collapsed",
-        )
-        return selected or options[0]
-    return st.radio(
-        label,
-        options,
-        horizontal=True,
-        label_visibility="collapsed",
-        key=key,
-    )
-
-
 def style_figure(fig):
     fig.update_layout(
         template="plotly_white",
@@ -1085,7 +1052,7 @@ def build_center_map_view(center_plan: pd.DataFrame, center_locations: pd.DataFr
     return mapped.dropna(subset=["LAT", "LON"]).copy()
 
 
-@st.cache_data(show_spinner=False, persist="disk")
+@st.cache_data(show_spinner=False)
 def build_preorder_sales_analysis(preorder_df: pd.DataFrame, sales_df: pd.DataFrame) -> pd.DataFrame:
     preorder = preorder_df.copy()
     sales = sales_df.copy()
@@ -1295,8 +1262,8 @@ def render_login_screen() -> None:
         )
 
 
-@st.cache_data(show_spinner=False, persist="disk")
-def load_item_md_mapping(cache_sig: tuple[str, int, int]) -> pd.DataFrame:
+@st.cache_data(show_spinner=False)
+def load_item_md_mapping() -> pd.DataFrame:
     df = pd.read_csv(
         MASTER_ITEM_PATH,
         usecols=["ITEM_CD", "REG_USER_ID", "ITEM_CRTR_CN"],
@@ -1310,8 +1277,8 @@ def load_item_md_mapping(cache_sig: tuple[str, int, int]) -> pd.DataFrame:
     return df[["ITEM_CODE", "REG_USER_ID", "ITEM_CRTR_CN", "ITEM_CRTR_SUMMARY"]].drop_duplicates()
 
 
-@st.cache_data(show_spinner=False, persist="disk")
-def load_preorder(cache_sig: tuple[str, int, int]) -> pd.DataFrame:
+@st.cache_data(show_spinner=False)
+def load_preorder() -> pd.DataFrame:
     df = pd.read_csv(PREORDER_PATH)
     numeric_cols = [
         "GOAL_INTRO_RT",
@@ -1349,12 +1316,9 @@ def load_preorder(cache_sig: tuple[str, int, int]) -> pd.DataFrame:
     return df
 
 
-@st.cache_data(show_spinner=False, persist="disk")
-def load_sales(cache_sig: tuple[str, int, int]) -> pd.DataFrame:
-    df = pd.read_csv(
-        SALES_PATH,
-        usecols=["ITEM_CD", "CENT_NM", "판매일자", "CENTER_SALE_QTY", "CENTER_SALE_AMT_VAT", "Ratio"],
-    )
+@st.cache_data(show_spinner=False)
+def load_sales() -> pd.DataFrame:
+    df = pd.read_csv(SALES_PATH)
     df["ITEM_CODE"] = df["ITEM_CD"].astype(str).str.strip()
     df["CENTER_NM"] = df["CENT_NM"].astype(str).str.strip()
     df["SALE_DATE"] = pd.to_datetime(df["판매일자"], errors="coerce")
@@ -1364,12 +1328,9 @@ def load_sales(cache_sig: tuple[str, int, int]) -> pd.DataFrame:
     return df
 
 
-@st.cache_data(show_spinner=False, persist="disk")
-def load_stock(cache_sig: tuple[str, int, int]) -> pd.DataFrame:
-    df = pd.read_csv(
-        STOCK_PATH,
-        usecols=["ITEM_CODE", "CENTER_CODE", "BIZ_DATE", "BOOK_END_QTY"],
-    )
+@st.cache_data(show_spinner=False)
+def load_stock() -> pd.DataFrame:
+    df = pd.read_csv(STOCK_PATH)
     df["ITEM_CODE"] = df["ITEM_CODE"].astype(str).str.strip()
     df["CENTER_CODE"] = df["CENTER_CODE"].map(normalize_center_code)
     df["BIZ_DT"] = pd.to_datetime(df["BIZ_DATE"].astype(str), format="%Y%m%d", errors="coerce")
@@ -1377,13 +1338,11 @@ def load_stock(cache_sig: tuple[str, int, int]) -> pd.DataFrame:
     return df
 
 
-@st.cache_data(show_spinner=False, persist="disk")
-def load_center_order(cache_sig: tuple[str, int, int]) -> pd.DataFrame:
+@st.cache_data(show_spinner=False)
+def load_center_order() -> pd.DataFrame:
     if not CENTER_ORDER_PATH.exists():
         return pd.DataFrame()
-    requested_cols = ["ITEM_CD", "CENT_CD", "SUM(A.CONV_QTY)", "ORD_YMD"]
-    available_cols = pd.read_csv(CENTER_ORDER_PATH, nrows=0).columns.tolist()
-    df = pd.read_csv(CENTER_ORDER_PATH, usecols=[col for col in requested_cols if col in available_cols])
+    df = pd.read_csv(CENTER_ORDER_PATH)
     if "ITEM_CD" in df.columns:
         df["ITEM_CODE"] = df["ITEM_CD"].astype(str).str.strip()
     if "CENT_CD" in df.columns:
@@ -1397,8 +1356,8 @@ def load_center_order(cache_sig: tuple[str, int, int]) -> pd.DataFrame:
     return df
 
 
-@st.cache_data(show_spinner=False, persist="disk")
-def load_predictions(cache_sig: tuple[str, int, int]) -> pd.DataFrame:
+@st.cache_data(show_spinner=False)
+def load_predictions() -> pd.DataFrame:
     predictions_path = PREDICTIONS_PATH if PREDICTIONS_PATH.exists() else DATA_DIR / "predictions.parquet"
     if not predictions_path.exists():
         return pd.DataFrame()
@@ -1455,7 +1414,6 @@ def build_outflow_7d_summary(
     )
 
 
-@st.cache_data(show_spinner=False, persist="disk")
 def build_prediction_initial_outflow_scatter(
     predictions_df: pd.DataFrame,
     preorder_df: pd.DataFrame,
@@ -1506,7 +1464,6 @@ def build_prediction_initial_outflow_scatter(
     return scatter_df
 
 
-@st.cache_data(show_spinner=False, persist="disk")
 def build_prediction_simulation_base(
     predictions_df: pd.DataFrame,
     preorder_df: pd.DataFrame,
@@ -1539,8 +1496,8 @@ def build_prediction_simulation_base(
     return base
 
 
-@st.cache_data(show_spinner=False, persist="disk")
-def load_w_recommend(cache_sig: tuple[str, int, int]) -> pd.DataFrame:
+@st.cache_data(show_spinner=False)
+def load_w_recommend() -> pd.DataFrame:
     recommend_path = next((path for path in W_RECOMMEND_CANDIDATES if path.exists()), None)
     if recommend_path is None:
         return pd.DataFrame()
@@ -1581,7 +1538,7 @@ def build_center_weight_lookup(center_codes: list[str]) -> dict[str, float]:
         center_code: float(CENTER_WEIGHT_CONFIG.get(center_code, {}).get("weight", 1.0))
         for center_code in center_codes
     }
-    recommend_df = load_w_recommend(first_existing_file_signature(W_RECOMMEND_CANDIDATES))
+    recommend_df = load_w_recommend()
     if not recommend_df.empty:
         recommended = recommend_df.set_index("CENTER_CODE")["W_RECOMMEND"].to_dict()
         for center_code in center_codes:
@@ -1861,8 +1818,8 @@ INVENTORY_DETAIL_DISPLAY_ROWS = 5_000
 INVENTORY_DETAIL_DOWNLOAD_ROWS = 50_000
 
 
-@st.cache_data(show_spinner=False, persist="disk")
-def load_item_dimension_master(cache_sig: tuple[str, int, int]) -> pd.DataFrame:
+@st.cache_data(show_spinner=False)
+def load_item_dimension_master() -> pd.DataFrame:
     if not MASTER_ITEM_PATH.exists():
         return pd.DataFrame(columns=["ITEM_CODE", "CALC_EA_PER_PALLET", "CALC_OB_QTY"])
 
@@ -1887,30 +1844,48 @@ def load_item_dimension_master(cache_sig: tuple[str, int, int]) -> pd.DataFrame:
         df[col] = pd.to_numeric(df[col].astype(str).str.replace(",", ""), errors="coerce").fillna(0)
     df["ITEM_CODE"] = df["ITEM_CD"].astype(str).str.strip()
 
-    def _ea_per_pallet(row: pd.Series) -> float:
-        if row.get("PLLT_OBT_QTY", 0) > 0:
-            return float(row["PLLT_OBT_QTY"])
+    def _col(name: str) -> pd.Series:
+        if name in df.columns:
+            return df[name]
+        return pd.Series(0.0, index=df.index)
 
-        outer_w = row.get("OB_WDTH_LENG", 0)
-        outer_d = row.get("OB_HGHT_LENG", 0)
-        outer_h = row.get("OB_HG", 0)
-        outer_qty = row.get("OB_OBT_QTY", 0)
-        if outer_w >= _MIN_DIM_CM and outer_d >= _MIN_DIM_CM and outer_h >= _MIN_DIM_CM and outer_qty > 0:
-            per_layer = np.floor(_PLT_W_CM / outer_w) * np.floor(_PLT_D_CM / outer_d)
-            stack_layers = row.get("PLLT_TSNG_QTY", 0)
-            layers = stack_layers if stack_layers > 0 else np.floor(_PLT_MAX_H_CM / outer_h)
-            return max(float(per_layer), 1) * max(float(layers), 1) * outer_qty
+    def _safe_floor_div(numer: float, denom: pd.Series) -> pd.Series:
+        return np.floor(numer / denom.where(denom > 0, 1))
 
-        item_w = row.get("ITEM_WDTH_LENG", 0)
-        item_d = row.get("ITEM_HGHT_LENG", 0)
-        item_h = row.get("ITEM_HG", 0)
-        if item_w >= _MIN_DIM_CM and item_d >= _MIN_DIM_CM and item_h >= _MIN_DIM_CM:
-            per_layer = np.floor(_PLT_W_CM / item_w) * np.floor(_PLT_D_CM / item_d)
-            layers = np.floor(_PLT_MAX_H_CM / item_h)
-            return max(float(per_layer), 1) * max(float(layers), 1)
-        return np.nan
+    pllt_obt = _col("PLLT_OBT_QTY")
+    outer_w = _col("OB_WDTH_LENG")
+    outer_d = _col("OB_HGHT_LENG")
+    outer_h = _col("OB_HG")
+    outer_qty = _col("OB_OBT_QTY")
+    stack_layers = _col("PLLT_TSNG_QTY")
+    item_w = _col("ITEM_WDTH_LENG")
+    item_d = _col("ITEM_HGHT_LENG")
+    item_h = _col("ITEM_HG")
 
-    df["CALC_EA_PER_PALLET"] = df.apply(_ea_per_pallet, axis=1)
+    outer_valid = (
+        (outer_w >= _MIN_DIM_CM)
+        & (outer_d >= _MIN_DIM_CM)
+        & (outer_h >= _MIN_DIM_CM)
+        & (outer_qty > 0)
+    )
+    outer_per_layer = _safe_floor_div(_PLT_W_CM, outer_w) * _safe_floor_div(_PLT_D_CM, outer_d)
+    outer_layers = np.where(stack_layers > 0, stack_layers, _safe_floor_div(_PLT_MAX_H_CM, outer_h))
+    outer_ea = np.maximum(outer_per_layer, 1.0) * np.maximum(outer_layers, 1.0) * outer_qty
+
+    item_valid = (
+        (item_w >= _MIN_DIM_CM)
+        & (item_d >= _MIN_DIM_CM)
+        & (item_h >= _MIN_DIM_CM)
+    )
+    item_per_layer = _safe_floor_div(_PLT_W_CM, item_w) * _safe_floor_div(_PLT_D_CM, item_d)
+    item_layers = _safe_floor_div(_PLT_MAX_H_CM, item_h)
+    item_ea = np.maximum(item_per_layer, 1.0) * np.maximum(item_layers, 1.0)
+
+    df["CALC_EA_PER_PALLET"] = np.where(
+        pllt_obt > 0,
+        pllt_obt.astype(float),
+        np.where(outer_valid, outer_ea, np.where(item_valid, item_ea, np.nan)),
+    )
     median_ea = df["CALC_EA_PER_PALLET"].median()
     df["CALC_EA_PER_PALLET"] = df["CALC_EA_PER_PALLET"].fillna(median_ea).clip(lower=1.0)
     if "OB_OBT_QTY" in df.columns:
@@ -1921,36 +1896,54 @@ def load_item_dimension_master(cache_sig: tuple[str, int, int]) -> pd.DataFrame:
     return df[["ITEM_CODE", "CALC_EA_PER_PALLET", "CALC_OB_QTY"]].drop_duplicates("ITEM_CODE")
 
 
-@st.cache_data(show_spinner=False, persist="disk")
-def build_inventory_cost_dataset(
+def _grouped_weighted_moving_average(
+    series: pd.Series,
+    group_keys: list,
+    window: int,
+) -> pd.Series:
+    weights = np.arange(window, 0, -1, dtype=float)
+    grouped = series.groupby(group_keys, sort=False)
+    cumcount = grouped.cumcount().to_numpy()
+    n = len(series)
+    num = np.zeros(n, dtype=float)
+    den = np.zeros(n, dtype=float)
+    has_nan = np.zeros(n, dtype=bool)
+    for k in range(window):
+        shifted = grouped.shift(k).to_numpy()
+        in_win = cumcount >= k
+        is_nan = np.isnan(shifted)
+        has_nan |= in_win & is_nan
+        valid = in_win & ~is_nan
+        num[valid] += weights[k] * shifted[valid]
+        den[valid] += weights[k]
+    out = np.full(n, np.nan, dtype=float)
+    safe = (den > 0) & ~has_nan
+    out[safe] = num[safe] / den[safe]
+    return pd.Series(out, index=series.index)
+
+
+@st.cache_data(show_spinner=False)
+def _build_inventory_cost_base(
     stock_df: pd.DataFrame,
     sales_df: pd.DataFrame,
     center_order_df: pd.DataFrame,
     preorder_df: pd.DataFrame,
-    pallet_daily_cost: float,
-    box_handling_cost: float,
-    annual_interest_rate: float,
 ) -> pd.DataFrame:
     if stock_df.empty:
         return pd.DataFrame()
 
-    dim_master = load_item_dimension_master(file_signature(MASTER_ITEM_PATH))
+    dim_master = load_item_dimension_master()
     item_meta = (
         preorder_df[
             ["ITEM_CODE", "ITEM_NM", "BRAND", "ITEM_MDDV_NM", "ITEM_SMDV_NM", "ST_CPM_AMT", "ST_SLEM_AMT"]
         ]
         .drop_duplicates("ITEM_CODE")
     )
-    center_meta = (
-        preorder_df[["CENTER_CODE", "CENTER_NM"]]
-        .drop_duplicates("CENTER_CODE")
-        .assign(CENTER_CODE=lambda df: df["CENTER_CODE"].map(normalize_center_code))
-    )
+    center_meta = preorder_df[["CENTER_CODE", "CENTER_NM"]].drop_duplicates("CENTER_CODE")
 
-    cost_df = stock_df.copy()
-    cost_df["CENTER_CODE"] = cost_df["CENTER_CODE"].map(normalize_center_code)
     cost_df = (
-        cost_df.merge(item_meta, on="ITEM_CODE", how="left")
+        stock_df
+        .merge(item_meta, on="ITEM_CODE", how="left")
         .merge(dim_master, on="ITEM_CODE", how="left")
         .merge(center_meta, on="CENTER_CODE", how="left")
     )
@@ -1962,7 +1955,7 @@ def build_inventory_cost_dataset(
 
     if not sales_df.empty:
         daily_sales = (
-            sales_df.groupby(["SALE_DATE", "ITEM_CODE", "CENTER_NM"], as_index=False)["CENTER_SALE_QTY"]
+            sales_df.groupby(["SALE_DATE", "ITEM_CODE", "CENTER_NM"], as_index=False, sort=False)["CENTER_SALE_QTY"]
             .sum()
             .rename(columns={"SALE_DATE": "BIZ_DT", "CENTER_SALE_QTY": "DAILY_OUTBOUND_QTY"})
         )
@@ -1972,11 +1965,10 @@ def build_inventory_cost_dataset(
 
     if not center_order_df.empty and {"ORD_DATE", "ITEM_CODE", "CENTER_CODE", "CONV_QTY"}.issubset(center_order_df.columns):
         daily_orders = (
-            center_order_df.groupby(["ORD_DATE", "ITEM_CODE", "CENTER_CODE"], as_index=False)["CONV_QTY"]
+            center_order_df.groupby(["ORD_DATE", "ITEM_CODE", "CENTER_CODE"], as_index=False, sort=False)["CONV_QTY"]
             .sum()
             .rename(columns={"ORD_DATE": "BIZ_DT", "CONV_QTY": "DAILY_INBOUND_QTY"})
         )
-        daily_orders["CENTER_CODE"] = daily_orders["CENTER_CODE"].map(normalize_center_code)
         cost_df = cost_df.merge(daily_orders, on=["BIZ_DT", "ITEM_CODE", "CENTER_CODE"], how="left")
     else:
         cost_df["DAILY_INBOUND_QTY"] = 0
@@ -1986,29 +1978,15 @@ def build_inventory_cost_dataset(
 
     cost_df = cost_df.sort_values(["ITEM_CODE", "CENTER_NM", "BIZ_DT"]).reset_index(drop=True)
 
-    def _weighted_avg(series: pd.Series, window: int) -> pd.Series:
-        weights = np.arange(1, window + 1, dtype=float)
-
-        def _wa(values: np.ndarray) -> float:
-            if len(values) == 0:
-                return np.nan
-            scoped_weights = weights[-len(values):]
-            return float(np.dot(values, scoped_weights) / scoped_weights.sum())
-
-        return series.rolling(window=window, min_periods=1).apply(_wa, raw=True)
-
-    sale_for_velocity = cost_df["DAILY_OUTBOUND_QTY"].where(cost_df["BOOK_END_QTY"] > 0)
-    sale_for_velocity = sale_for_velocity.groupby([cost_df["ITEM_CODE"], cost_df["CENTER_NM"]]).ffill()
-    cost_df["SALE_VEL_3D"] = (
-        sale_for_velocity.groupby([cost_df["ITEM_CODE"], cost_df["CENTER_NM"]])
-        .transform(lambda series: _weighted_avg(series, window=3))
-        .fillna(0)
+    group_keys = [cost_df["ITEM_CODE"], cost_df["CENTER_NM"]]
+    sale_for_velocity = (
+        cost_df["DAILY_OUTBOUND_QTY"]
+        .where(cost_df["BOOK_END_QTY"] > 0)
+        .groupby(group_keys, sort=False)
+        .ffill()
     )
-    cost_df["SALE_VEL_7D"] = (
-        sale_for_velocity.groupby([cost_df["ITEM_CODE"], cost_df["CENTER_NM"]])
-        .transform(lambda series: _weighted_avg(series, window=7))
-        .fillna(0)
-    )
+    cost_df["SALE_VEL_3D"] = _grouped_weighted_moving_average(sale_for_velocity, group_keys, 3).fillna(0)
+    cost_df["SALE_VEL_7D"] = _grouped_weighted_moving_average(sale_for_velocity, group_keys, 7).fillna(0)
     cost_df["SALE_ACCEL"] = cost_df["SALE_VEL_3D"] - cost_df["SALE_VEL_7D"]
     cost_df["EST_DAILY_DEMAND"] = np.where(
         cost_df["SALE_VEL_7D"] > 0,
@@ -2016,39 +1994,61 @@ def build_inventory_cost_dataset(
         cost_df["SALE_VEL_3D"],
     )
 
-    daily_rate = float(annual_interest_rate) / 365
-
     cost_df["PALLET_COUNT"] = np.ceil(cost_df["BOOK_END_QTY"].clip(lower=0) / cost_df["CALC_EA_PER_PALLET"])
-    cost_df["STORAGE_COST"] = cost_df["PALLET_COUNT"] * pallet_daily_cost
     cost_df["OUTBOUND_BOX_COUNT"] = np.ceil(cost_df["DAILY_OUTBOUND_QTY"].clip(lower=0) / cost_df["CALC_OB_QTY"])
     cost_df["INBOUND_BOX_COUNT"] = np.ceil(cost_df["DAILY_INBOUND_QTY"].clip(lower=0) / cost_df["CALC_OB_QTY"])
-    cost_df["OUTBOUND_HANDLING_COST"] = cost_df["OUTBOUND_BOX_COUNT"] * box_handling_cost
-    cost_df["INBOUND_HANDLING_COST"] = cost_df["INBOUND_BOX_COUNT"] * box_handling_cost
     cost_df["INVENTORY_VALUE"] = cost_df["BOOK_END_QTY"] * cost_df["ST_CPM_AMT"]
-    cost_df["CAPITAL_COST"] = cost_df["INVENTORY_VALUE"] * daily_rate
-    cost_df["TOTAL_HANDLING_COST"] = cost_df["OUTBOUND_HANDLING_COST"] + cost_df["INBOUND_HANDLING_COST"]
     cost_df["MARGIN_PER_EA"] = (cost_df["ST_SLEM_AMT"] - cost_df["ST_CPM_AMT"]).clip(lower=0)
     cost_df["STOCKOUT_OPP_COST"] = np.where(
         (cost_df["BOOK_END_QTY"] == 0) & (cost_df["EST_DAILY_DEMAND"] > 0),
         cost_df["EST_DAILY_DEMAND"] * cost_df["MARGIN_PER_EA"],
         0.0,
     )
-    cost_df["DAILY_TOTAL_COST"] = (
-        cost_df["STORAGE_COST"]
-        + cost_df["TOTAL_HANDLING_COST"]
-        + cost_df["CAPITAL_COST"]
-        + cost_df["STOCKOUT_OPP_COST"]
-    )
-    cost_df["STORAGE_COST_PER_EA"] = pallet_daily_cost / cost_df["CALC_EA_PER_PALLET"]
-    cost_df["HANDLING_COST_PER_EA"] = box_handling_cost / cost_df["CALC_OB_QTY"]
-    cost_df["CAPITAL_COST_PER_EA"] = cost_df["ST_CPM_AMT"] * daily_rate
-    cost_df["TOTAL_COST_PER_EA_PER_DAY"] = cost_df["STORAGE_COST_PER_EA"] + cost_df["CAPITAL_COST_PER_EA"]
-    cost_df["LOGISTICS_TO_SLEM_PCT"] = np.where(
-        cost_df["ST_SLEM_AMT"] > 0,
-        cost_df["TOTAL_COST_PER_EA_PER_DAY"] / cost_df["ST_SLEM_AMT"] * 100,
+    return cost_df
+
+
+def build_inventory_cost_dataset(
+    stock_df: pd.DataFrame,
+    sales_df: pd.DataFrame,
+    center_order_df: pd.DataFrame,
+    preorder_df: pd.DataFrame,
+    pallet_daily_cost: float,
+    box_handling_cost: float,
+    annual_interest_rate: float,
+) -> pd.DataFrame:
+    base_df = _build_inventory_cost_base(stock_df, sales_df, center_order_df, preorder_df)
+    if base_df.empty:
+        return base_df
+
+    daily_rate = float(annual_interest_rate) / 365
+    storage_cost = base_df["PALLET_COUNT"] * pallet_daily_cost
+    outbound_handling = base_df["OUTBOUND_BOX_COUNT"] * box_handling_cost
+    inbound_handling = base_df["INBOUND_BOX_COUNT"] * box_handling_cost
+    total_handling = outbound_handling + inbound_handling
+    capital_cost = base_df["INVENTORY_VALUE"] * daily_rate
+    storage_per_ea = pallet_daily_cost / base_df["CALC_EA_PER_PALLET"]
+    handling_per_ea = box_handling_cost / base_df["CALC_OB_QTY"]
+    capital_per_ea = base_df["ST_CPM_AMT"] * daily_rate
+    total_per_ea = storage_per_ea + capital_per_ea
+    logistics_to_slem = np.where(
+        base_df["ST_SLEM_AMT"] > 0,
+        total_per_ea / base_df["ST_SLEM_AMT"] * 100,
         np.nan,
     )
-    return cost_df
+
+    return base_df.assign(
+        STORAGE_COST=storage_cost,
+        OUTBOUND_HANDLING_COST=outbound_handling,
+        INBOUND_HANDLING_COST=inbound_handling,
+        TOTAL_HANDLING_COST=total_handling,
+        CAPITAL_COST=capital_cost,
+        DAILY_TOTAL_COST=storage_cost + total_handling + capital_cost + base_df["STOCKOUT_OPP_COST"],
+        STORAGE_COST_PER_EA=storage_per_ea,
+        HANDLING_COST_PER_EA=handling_per_ea,
+        CAPITAL_COST_PER_EA=capital_per_ea,
+        TOTAL_COST_PER_EA_PER_DAY=total_per_ea,
+        LOGISTICS_TO_SLEM_PCT=logistics_to_slem,
+    )
 
 
 def render_inventory_cost_page(
@@ -2161,13 +2161,9 @@ def render_inventory_cost_page(
     c3.metric("총 자본비용", format_won(total_capital))
     c4.metric("총 재고비용", format_won(total_cost))
 
-    inventory_view = lazy_view_selector(
-        "재고비용 보기",
-        ["비용 추이", "센터/상품별 비용", "부진재고", "상세 데이터"],
-        key="inventory_cost_view",
-    )
+    tab1, tab2, tab3, tab4 = st.tabs(["비용 추이", "센터/상품별 비용", "부진재고", "상세 데이터"])
 
-    if inventory_view == "비용 추이":
+    with tab1:
         daily_cost = (
             filtered.groupby("BIZ_DT", as_index=False)[
                 ["STORAGE_COST", "TOTAL_HANDLING_COST", "CAPITAL_COST", "DAILY_TOTAL_COST"]
@@ -2239,7 +2235,7 @@ def render_inventory_cost_page(
             fig_s.update_layout(showlegend=False)
             st.plotly_chart(fig_s, use_container_width=True)
 
-    if inventory_view == "센터/상품별 비용":
+    with tab2:
         center_cost = (
             filtered.groupby("CENTER_NM", as_index=False)["DAILY_TOTAL_COST"]
             .sum()
@@ -2285,7 +2281,7 @@ def render_inventory_cost_page(
                 hide_index=True,
             )
 
-    if inventory_view == "부진재고":
+    with tab3:
         latest_date = filtered["BIZ_DT"].max()
         latest_stock = (
             filtered[filtered["BIZ_DT"] == latest_date]
@@ -2405,7 +2401,7 @@ def render_inventory_cost_page(
             hide_index=True,
         )
 
-    if inventory_view == "상세 데이터":
+    with tab4:
         subtab_agg, subtab_unit = st.tabs(["전체 비용 (일별)", "EA당 단위 비용"])
 
         with subtab_agg:
@@ -2528,8 +2524,8 @@ def render_inventory_cost_page(
             )
 
 
-@st.cache_data(show_spinner=False, persist="disk")
-def load_center_locations(cache_sig: tuple[str, int, int]) -> pd.DataFrame:
+@st.cache_data(show_spinner=False)
+def load_center_locations() -> pd.DataFrame:
     if not CENTER_MAP_PATH.exists():
         return pd.DataFrame()
     df = pd.read_csv(CENTER_MAP_PATH, low_memory=False)
@@ -2554,9 +2550,9 @@ def load_center_locations(cache_sig: tuple[str, int, int]) -> pd.DataFrame:
     return df[keep_cols].drop_duplicates()
 
 
-@st.cache_data(show_spinner=False, persist="disk")
+@st.cache_data(show_spinner=False)
 def build_item_master(preorder_df: pd.DataFrame) -> pd.DataFrame:
-    md_map = load_item_md_mapping(file_signature(MASTER_ITEM_PATH))
+    md_map = load_item_md_mapping()
     item_master = (
         preorder_df.sort_values(["ITEM_CODE", "NP_RLSE_DATE"])
         .groupby("ITEM_CODE", as_index=False)
@@ -2588,7 +2584,7 @@ def build_item_master(preorder_df: pd.DataFrame) -> pd.DataFrame:
     return item_master.sort_values(["NP_RLSE_DATE", "ITEM_CODE"], ascending=[False, True])
 
 
-@st.cache_data(show_spinner=False, persist="disk")
+@st.cache_data(show_spinner=False)
 def build_center_master(preorder_df: pd.DataFrame) -> pd.DataFrame:
     return (
         preorder_df[["CENTER_CODE", "CENTER_NM"]]
@@ -2738,7 +2734,7 @@ def build_item_summary(filtered_preorder: pd.DataFrame, filtered_sales: pd.DataF
     return summary.sort_values("INITIAL_ORD_QTY", ascending=False)
 
 
-@st.cache_data(show_spinner=False, persist="disk")
+@st.cache_data(show_spinner=False)
 def build_past_reference_item_analysis(
     preorder_df: pd.DataFrame,
     sales_df: pd.DataFrame,
@@ -3784,7 +3780,6 @@ def render_past_current_release_focus(preorder_df: pd.DataFrame, base_date: pd.T
     st.dataframe(release_window[show_columns], width="stretch", height=360, hide_index=True)
 
 
-@st.cache_data(show_spinner=False, persist="disk")
 def build_past_item_status_df(
     preorder_df: pd.DataFrame,
     sales_df: pd.DataFrame,
@@ -4123,20 +4118,33 @@ def render_past_dashboard_page(
     base_date: pd.Timestamp,
 ) -> None:
     st.markdown("## 과거 신상품 조회")
-    past_view = lazy_view_selector(
-        "과거 신상품 조회 보기",
-        ["과거 신상품 조회", "과거 Raw Data", "상품별 데이터", "상품별 상태 분석"],
-        key="past_dashboard_view",
+    tabs = st.tabs(
+        ["과거 신상품 조회", "과거 Raw Data", "상품별 데이터", "상품별 상태 분석"]
     )
-    if past_view == "과거 신상품 조회":
+    with tabs[0]:
         render_past_lookup_overview(preorder_df, sales_df, predictions_df)
-    elif past_view == "과거 Raw Data":
+    with tabs[1]:
         render_past_raw_data_tab(preorder_df, sales_df, center_order_df, stock_df, base_date)
-    elif past_view == "상품별 데이터":
+    with tabs[2]:
         render_past_product_data_detail(preorder_df, sales_df, predictions_df)
-    else:
+    with tabs[3]:
         render_past_status_analysis_tab(preorder_df, sales_df, predictions_df)
 
+
+preorder_df = load_preorder()
+sales_df = load_sales()
+stock_df = load_stock()
+center_order_df = load_center_order()
+predictions_df = load_predictions()
+item_master = build_item_master(preorder_df)
+center_master = build_center_master(preorder_df)
+
+full_preorder_df = preorder_df.copy()
+full_sales_df = sales_df.copy()
+full_stock_df = stock_df.copy()
+full_center_order_df = center_order_df.copy()
+full_predictions_df = predictions_df.copy()
+full_item_master = item_master.copy()
 
 inject_theme()
 
@@ -4151,30 +4159,13 @@ if st.session_state.get("app_session_version") != APP_SESSION_VERSION:
     st.session_state.pop("login_user", None)
     st.session_state.pop("weekly_selected_item", None)
 
-login_md_map = load_item_md_mapping(file_signature(MASTER_ITEM_PATH))
 st.session_state["valid_md_ids"] = set(
-    login_md_map.loc[login_md_map["REG_USER_ID"].ne("unassigned"), "REG_USER_ID"].dropna().tolist()
+    item_master.loc[item_master["REG_USER_ID"].ne("unassigned"), "REG_USER_ID"].dropna().tolist()
 )
 
 if not st.session_state["is_logged_in"]:
     render_login_screen()
     st.stop()
-
-preorder_df = load_preorder(file_signature(PREORDER_PATH))
-sales_df = load_sales(file_signature(SALES_PATH))
-stock_df = load_stock(file_signature(STOCK_PATH))
-center_order_df = load_center_order(file_signature(CENTER_ORDER_PATH))
-predictions_source = PREDICTIONS_PATH if PREDICTIONS_PATH.exists() else DATA_DIR / "predictions.parquet"
-predictions_df = load_predictions(file_signature(predictions_source))
-item_master = build_item_master(preorder_df)
-center_master = build_center_master(preorder_df)
-
-full_preorder_df = preorder_df
-full_sales_df = sales_df
-full_stock_df = stock_df
-full_center_order_df = center_order_df
-full_predictions_df = predictions_df
-full_item_master = item_master
 
 logged_user = st.session_state.get("login_user", "").strip().lower()
 is_master_user = st.session_state.get("is_master_user", False)
@@ -4496,7 +4487,7 @@ else:
 
     selected_center_detail = build_item_center_preorder_detail(preorder_df, selected_weekly_item)
     selected_center_plan = build_center_initial_order_plan(selected_center_detail)
-    selected_center_map = build_center_map_view(selected_center_plan, load_center_locations(file_signature(CENTER_MAP_PATH)))
+    selected_center_map = build_center_map_view(selected_center_plan, load_center_locations())
     selected_profile = build_item_preorder_profile(preorder_df, selected_weekly_item)
     selected_center_profile = build_item_center_preorder_profile(preorder_df, selected_weekly_item)
     detail_analysis, detail_summary = build_item_detail_analysis(analysis_df, selected_weekly_item)
