@@ -910,25 +910,6 @@ def render_kpi_card(label: str, value: str, subtext: str) -> None:
     )
 
 
-def lazy_view_selector(label: str, options: list[str], key: str) -> str:
-    if hasattr(st, "segmented_control"):
-        selected = st.segmented_control(
-            label,
-            options=options,
-            default=options[0],
-            key=key,
-            label_visibility="collapsed",
-        )
-        return selected or options[0]
-    return st.radio(
-        label,
-        options,
-        horizontal=True,
-        label_visibility="collapsed",
-        key=key,
-    )
-
-
 def style_figure(fig):
     fig.update_layout(
         template="plotly_white",
@@ -990,10 +971,10 @@ def build_weekly_item_list(item_master: pd.DataFrame, preorder_df: pd.DataFrame,
     ]
     out[fill_cols] = out[fill_cols].fillna(0)
     out["WEEK_RESERVATION_RATE"] = (
-        out["WEEK_RESERVATION_QTY"] / out["WEEK_INITIAL_ORD_QTY"].replace(0, pd.NA) * 100
+        out["WEEK_RESERVATION_QTY"] / out["WEEK_INITIAL_ORD_QTY"].replace(0, np.nan) * 100
     )
     out["WEEK_STORE_PARTICIPATION"] = (
-        out["WEEK_ORDERING_STORE_CNT"] / out["WEEK_TOTAL_STORE_CNT"].replace(0, pd.NA) * 100
+        out["WEEK_ORDERING_STORE_CNT"] / out["WEEK_TOTAL_STORE_CNT"].replace(0, np.nan) * 100
     )
     out["RESERVATION_BADGE"] = pd.cut(
         out["WEEK_RESERVATION_RATE"].fillna(0),
@@ -1017,10 +998,10 @@ def build_item_center_preorder_detail(preorder_df: pd.DataFrame, item_code: str)
         )
     )
     center_detail["예약/초도 비율(%)"] = (
-        center_detail["RESERVATION_QTY"] / center_detail["INITIAL_ORD_QTY"].replace(0, pd.NA) * 100
+        center_detail["RESERVATION_QTY"] / center_detail["INITIAL_ORD_QTY"].replace(0, np.nan) * 100
     )
     center_detail["예약 참여율(%)"] = (
-        center_detail["ORDERING_STORE_CNT"] / center_detail["TOTAL_STORE_CNT"].replace(0, pd.NA) * 100
+        center_detail["ORDERING_STORE_CNT"] / center_detail["TOTAL_STORE_CNT"].replace(0, np.nan) * 100
     )
     return center_detail.sort_values("RESERVATION_QTY", ascending=False)
 
@@ -1073,31 +1054,22 @@ def build_center_map_view(center_plan: pd.DataFrame, center_locations: pd.DataFr
 
 @st.cache_data(show_spinner=False)
 def build_preorder_sales_analysis(preorder_df: pd.DataFrame, sales_df: pd.DataFrame) -> pd.DataFrame:
-    preorder = preorder_df.copy()
-    sales = sales_df.copy()
-
-    preorder["NP_RLSE_DATE"] = pd.to_datetime(preorder["NP_RLSE_DATE"], errors="coerce")
-    sales["SALE_DATE"] = pd.to_datetime(sales["SALE_DATE"], errors="coerce")
-
-    merged = preorder.merge(
-        sales,
-        left_on=["ITEM_CODE", "CENTER_NM"],
-        right_on=["ITEM_CODE", "CENTER_NM"],
-        how="left",
+    rlse_map = (
+        preorder_df[["ITEM_CODE", "CENTER_NM", "NP_RLSE_DATE"]]
+        .drop_duplicates(subset=["ITEM_CODE", "CENTER_NM"])
     )
-
-    in_window = merged[
-        (merged["SALE_DATE"] >= merged["NP_RLSE_DATE"])
-        & (merged["SALE_DATE"] < merged["NP_RLSE_DATE"] + pd.Timedelta(days=7))
-    ].copy()
-
+    sales_with_rlse = sales_df.merge(rlse_map, on=["ITEM_CODE", "CENTER_NM"], how="inner")
+    in_window = sales_with_rlse[
+        (sales_with_rlse["SALE_DATE"] >= sales_with_rlse["NP_RLSE_DATE"])
+        & (sales_with_rlse["SALE_DATE"] < sales_with_rlse["NP_RLSE_DATE"] + pd.Timedelta(days=7))
+    ]
     actual_sales = (
         in_window.groupby(["ITEM_CODE", "CENTER_NM"], as_index=False)["CENTER_SALE_QTY"]
         .sum()
         .rename(columns={"CENTER_SALE_QTY": "actual_sales_qty_7d"})
     )
 
-    base = preorder.merge(actual_sales, on=["ITEM_CODE", "CENTER_NM"], how="left")
+    base = preorder_df.merge(actual_sales, on=["ITEM_CODE", "CENTER_NM"], how="left")
     base["actual_sales_qty_7d"] = base["actual_sales_qty_7d"].fillna(0)
     base["preorder_qty"] = pd.to_numeric(base["reservation_qty_total"], errors="coerce").fillna(0)
     base["initial_order_qty"] = pd.to_numeric(base["INITIAL_ORD_QTY"], errors="coerce").fillna(0)
@@ -1298,7 +1270,7 @@ def load_item_md_mapping() -> pd.DataFrame:
 
 @st.cache_data(show_spinner=False)
 def load_preorder() -> pd.DataFrame:
-    df = pd.read_csv(PREORDER_PATH)
+    df = pd.read_csv(PREORDER_PATH, low_memory=False)
     numeric_cols = [
         "GOAL_INTRO_RT",
         "MIN_ORD_QTY",
@@ -1311,7 +1283,8 @@ def load_preorder() -> pd.DataFrame:
         "ST_SLEM_AMT",
     ] + PREORDER_DAY_COLUMNS
     for col in numeric_cols:
-        df[col] = clean_numeric(df[col]).fillna(0)
+        if col in df.columns:
+            df[col] = clean_numeric(df[col]).fillna(0).astype("float32")
 
     df["ITEM_CODE"] = df["ITEM_CODE"].astype(str).str.strip()
     df["CENTER_CODE"] = df["CENTER_CODE"].map(normalize_center_code)
@@ -1319,13 +1292,13 @@ def load_preorder() -> pd.DataFrame:
     df["intro_rate_pct"] = df["GOAL_INTRO_RT"]
     df["reservation_qty_total"] = df["total_pre_order_qty(D-11~D-8)"]
     df["reservation_to_initial_ratio"] = (
-        df["reservation_qty_total"] / df["INITIAL_ORD_QTY"].replace(0, pd.NA) * 100
+        df["reservation_qty_total"] / df["INITIAL_ORD_QTY"].replace(0, np.nan) * 100
     )
     df["store_participation_pct"] = (
-        df["ordering_store_cnt"] / df["total_store_cnt"].replace(0, pd.NA) * 100
+        df["ordering_store_cnt"] / df["total_store_cnt"].replace(0, np.nan) * 100
     )
     df["gross_margin_rate_pct"] = (
-        (df["ST_SLEM_AMT"] - df["ST_CPM_AMT"]) / df["ST_SLEM_AMT"].replace(0, pd.NA) * 100
+        (df["ST_SLEM_AMT"] - df["ST_CPM_AMT"]) / df["ST_SLEM_AMT"].replace(0, np.nan) * 100
     )
     df["price_band"] = pd.cut(
         df["ST_SLEM_AMT"],
@@ -1337,39 +1310,49 @@ def load_preorder() -> pd.DataFrame:
 
 @st.cache_data(show_spinner=False)
 def load_sales() -> pd.DataFrame:
-    df = pd.read_csv(
-        SALES_PATH,
-        usecols=["ITEM_CD", "CENT_NM", "판매일자", "CENTER_SALE_QTY", "CENTER_SALE_AMT_VAT", "Ratio"],
-    )
+    df = pd.read_csv(SALES_PATH, low_memory=False)
     df["ITEM_CODE"] = df["ITEM_CD"].astype(str).str.strip()
     df["CENTER_NM"] = df["CENT_NM"].astype(str).str.strip()
     df["SALE_DATE"] = pd.to_datetime(df["판매일자"], errors="coerce")
-    df["CENTER_SALE_QTY"] = clean_numeric(df["CENTER_SALE_QTY"]).fillna(0)
-    df["CENTER_SALE_AMT_VAT"] = clean_numeric(df["CENTER_SALE_AMT_VAT"]).fillna(0)
-    df["Ratio"] = clean_numeric(df["Ratio"]).fillna(0)
-    return df
+    df["CENTER_SALE_QTY"] = clean_numeric(df["CENTER_SALE_QTY"]).fillna(0).astype("float32")
+    df["CENTER_SALE_AMT_VAT"] = clean_numeric(df["CENTER_SALE_AMT_VAT"]).fillna(0).astype("float32")
+    df["Ratio"] = clean_numeric(df["Ratio"]).fillna(0).astype("float32")
+    keep = ["ITEM_CODE", "CENTER_NM", "SALE_DATE", "CENTER_SALE_QTY", "CENTER_SALE_AMT_VAT", "Ratio"]
+    return df[[c for c in keep if c in df.columns]]
 
 
 @st.cache_data(show_spinner=False)
-def load_stock() -> pd.DataFrame:
-    df = pd.read_csv(
+def load_stock(item_codes: frozenset | None = None) -> pd.DataFrame:
+    if not STOCK_PATH.exists():
+        return pd.DataFrame()
+    chunks = []
+    reader = pd.read_csv(
         STOCK_PATH,
-        usecols=["ITEM_CODE", "CENTER_CODE", "BIZ_DATE", "BOOK_END_QTY"],
+        usecols=["BIZ_DATE", "CENTER_CODE", "ITEM_CODE", "BOOK_END_QTY"],
+        dtype={"BIZ_DATE": "int32", "CENTER_CODE": "category", "ITEM_CODE": "category"},
+        chunksize=500_000,
     )
-    df["ITEM_CODE"] = df["ITEM_CODE"].astype(str).str.strip()
-    df["CENTER_CODE"] = df["CENTER_CODE"].map(normalize_center_code)
+    for chunk in reader:
+        chunk["ITEM_CODE"] = chunk["ITEM_CODE"].astype(str).str.strip()
+        if item_codes:
+            chunk = chunk[chunk["ITEM_CODE"].isin(item_codes)]
+        if not chunk.empty:
+            chunks.append(chunk)
+    if not chunks:
+        return pd.DataFrame()
+    df = pd.concat(chunks, ignore_index=True)
+    df["CENTER_CODE"] = df["CENTER_CODE"].astype(str).map(normalize_center_code).astype("category")
+    df["ITEM_CODE"] = df["ITEM_CODE"].astype("category")
     df["BIZ_DT"] = pd.to_datetime(df["BIZ_DATE"].astype(str), format="%Y%m%d", errors="coerce")
-    df["BOOK_END_QTY"] = clean_numeric(df["BOOK_END_QTY"]).fillna(0)
-    return df
+    df["BOOK_END_QTY"] = clean_numeric(df["BOOK_END_QTY"]).fillna(0).astype("float32")
+    return df[["ITEM_CODE", "CENTER_CODE", "BIZ_DT", "BOOK_END_QTY"]]
 
 
 @st.cache_data(show_spinner=False)
 def load_center_order() -> pd.DataFrame:
     if not CENTER_ORDER_PATH.exists():
         return pd.DataFrame()
-    requested_cols = ["ITEM_CD", "CENT_CD", "SUM(A.CONV_QTY)", "ORD_YMD"]
-    available_cols = pd.read_csv(CENTER_ORDER_PATH, nrows=0).columns.tolist()
-    df = pd.read_csv(CENTER_ORDER_PATH, usecols=[col for col in requested_cols if col in available_cols])
+    df = pd.read_csv(CENTER_ORDER_PATH)
     if "ITEM_CD" in df.columns:
         df["ITEM_CODE"] = df["ITEM_CD"].astype(str).str.strip()
     if "CENT_CD" in df.columns:
@@ -1483,11 +1466,11 @@ def build_prediction_initial_outflow_scatter(
         .drop_duplicates("ITEM_CODE")
     )
     scatter_df = scatter_df.merge(item_meta, on="ITEM_CODE", how="left")
-    safe_initial = scatter_df["INITIAL_ORD_QTY"].replace(0, pd.NA)
+    safe_initial = scatter_df["INITIAL_ORD_QTY"].replace(0, np.nan)
     scatter_df["실출고율(%)"] = (scatter_df["OUTFLOW_7D"] / safe_initial * 100).round(1)
     scatter_df["출고율"] = scatter_df["OUTFLOW_7D"] / safe_initial
     scatter_df["상태"] = classify_outflow_status(scatter_df["출고율"])
-    scatter_df["MD/OPTIMAL 배수"] = scatter_df["INITIAL_ORD_QTY"] / scatter_df["OUTFLOW_7D"].replace(0, pd.NA)
+    scatter_df["MD/OPTIMAL 배수"] = scatter_df["INITIAL_ORD_QTY"] / scatter_df["OUTFLOW_7D"].replace(0, np.nan)
     return scatter_df
 
 
@@ -1499,7 +1482,7 @@ def build_prediction_simulation_base(
     if predictions_df.empty or not required_cols.issubset(predictions_df.columns):
         return pd.DataFrame()
 
-    base = predictions_df.copy()
+    base = predictions_df
     if "NP_RLSE_YMD" in base.columns:
         base["NP_RLSE_DATE"] = pd.to_datetime(base["NP_RLSE_YMD"], errors="coerce")
     elif "NP_RLSE_DATE" in base.columns:
@@ -1800,7 +1783,7 @@ def render_md_order_simulation_tab(
         st.rerun()
 
     md_pivot = live_md_pivot.reindex_like(current_pivot).fillna(0)
-    ratio = md_pivot / ml_pivot.replace(0, pd.NA)
+    ratio = md_pivot / ml_pivot.replace(0, np.nan)
     signal = pd.DataFrame("-", index=ratio.index, columns=ratio.columns)
     signal[(ratio >= 0.5) & (ratio <= 2.0)] = "정상"
     signal[(ratio > 2.0) & (ratio <= 3.0)] = "과발주"
@@ -1871,30 +1854,48 @@ def load_item_dimension_master() -> pd.DataFrame:
         df[col] = pd.to_numeric(df[col].astype(str).str.replace(",", ""), errors="coerce").fillna(0)
     df["ITEM_CODE"] = df["ITEM_CD"].astype(str).str.strip()
 
-    def _ea_per_pallet(row: pd.Series) -> float:
-        if row.get("PLLT_OBT_QTY", 0) > 0:
-            return float(row["PLLT_OBT_QTY"])
+    def _col(name: str) -> pd.Series:
+        if name in df.columns:
+            return df[name]
+        return pd.Series(0.0, index=df.index)
 
-        outer_w = row.get("OB_WDTH_LENG", 0)
-        outer_d = row.get("OB_HGHT_LENG", 0)
-        outer_h = row.get("OB_HG", 0)
-        outer_qty = row.get("OB_OBT_QTY", 0)
-        if outer_w >= _MIN_DIM_CM and outer_d >= _MIN_DIM_CM and outer_h >= _MIN_DIM_CM and outer_qty > 0:
-            per_layer = np.floor(_PLT_W_CM / outer_w) * np.floor(_PLT_D_CM / outer_d)
-            stack_layers = row.get("PLLT_TSNG_QTY", 0)
-            layers = stack_layers if stack_layers > 0 else np.floor(_PLT_MAX_H_CM / outer_h)
-            return max(float(per_layer), 1) * max(float(layers), 1) * outer_qty
+    def _safe_floor_div(numer: float, denom: pd.Series) -> pd.Series:
+        return np.floor(numer / denom.where(denom > 0, 1))
 
-        item_w = row.get("ITEM_WDTH_LENG", 0)
-        item_d = row.get("ITEM_HGHT_LENG", 0)
-        item_h = row.get("ITEM_HG", 0)
-        if item_w >= _MIN_DIM_CM and item_d >= _MIN_DIM_CM and item_h >= _MIN_DIM_CM:
-            per_layer = np.floor(_PLT_W_CM / item_w) * np.floor(_PLT_D_CM / item_d)
-            layers = np.floor(_PLT_MAX_H_CM / item_h)
-            return max(float(per_layer), 1) * max(float(layers), 1)
-        return np.nan
+    pllt_obt = _col("PLLT_OBT_QTY")
+    outer_w = _col("OB_WDTH_LENG")
+    outer_d = _col("OB_HGHT_LENG")
+    outer_h = _col("OB_HG")
+    outer_qty = _col("OB_OBT_QTY")
+    stack_layers = _col("PLLT_TSNG_QTY")
+    item_w = _col("ITEM_WDTH_LENG")
+    item_d = _col("ITEM_HGHT_LENG")
+    item_h = _col("ITEM_HG")
 
-    df["CALC_EA_PER_PALLET"] = df.apply(_ea_per_pallet, axis=1)
+    outer_valid = (
+        (outer_w >= _MIN_DIM_CM)
+        & (outer_d >= _MIN_DIM_CM)
+        & (outer_h >= _MIN_DIM_CM)
+        & (outer_qty > 0)
+    )
+    outer_per_layer = _safe_floor_div(_PLT_W_CM, outer_w) * _safe_floor_div(_PLT_D_CM, outer_d)
+    outer_layers = np.where(stack_layers > 0, stack_layers, _safe_floor_div(_PLT_MAX_H_CM, outer_h))
+    outer_ea = np.maximum(outer_per_layer, 1.0) * np.maximum(outer_layers, 1.0) * outer_qty
+
+    item_valid = (
+        (item_w >= _MIN_DIM_CM)
+        & (item_d >= _MIN_DIM_CM)
+        & (item_h >= _MIN_DIM_CM)
+    )
+    item_per_layer = _safe_floor_div(_PLT_W_CM, item_w) * _safe_floor_div(_PLT_D_CM, item_d)
+    item_layers = _safe_floor_div(_PLT_MAX_H_CM, item_h)
+    item_ea = np.maximum(item_per_layer, 1.0) * np.maximum(item_layers, 1.0)
+
+    df["CALC_EA_PER_PALLET"] = np.where(
+        pllt_obt > 0,
+        pllt_obt.astype(float),
+        np.where(outer_valid, outer_ea, np.where(item_valid, item_ea, np.nan)),
+    )
     median_ea = df["CALC_EA_PER_PALLET"].median()
     df["CALC_EA_PER_PALLET"] = df["CALC_EA_PER_PALLET"].fillna(median_ea).clip(lower=1.0)
     if "OB_OBT_QTY" in df.columns:
@@ -1905,15 +1906,38 @@ def load_item_dimension_master() -> pd.DataFrame:
     return df[["ITEM_CODE", "CALC_EA_PER_PALLET", "CALC_OB_QTY"]].drop_duplicates("ITEM_CODE")
 
 
+def _grouped_weighted_moving_average(
+    series: pd.Series,
+    group_keys: list,
+    window: int,
+) -> pd.Series:
+    weights = np.arange(window, 0, -1, dtype=float)
+    grouped = series.groupby(group_keys, sort=False)
+    cumcount = grouped.cumcount().to_numpy()
+    n = len(series)
+    num = np.zeros(n, dtype=float)
+    den = np.zeros(n, dtype=float)
+    has_nan = np.zeros(n, dtype=bool)
+    for k in range(window):
+        shifted = grouped.shift(k).to_numpy()
+        in_win = cumcount >= k
+        is_nan = np.isnan(shifted)
+        has_nan |= in_win & is_nan
+        valid = in_win & ~is_nan
+        num[valid] += weights[k] * shifted[valid]
+        den[valid] += weights[k]
+    out = np.full(n, np.nan, dtype=float)
+    safe = (den > 0) & ~has_nan
+    out[safe] = num[safe] / den[safe]
+    return pd.Series(out, index=series.index)
+
+
 @st.cache_data(show_spinner=False)
-def build_inventory_cost_dataset(
+def _build_inventory_cost_base(
     stock_df: pd.DataFrame,
     sales_df: pd.DataFrame,
     center_order_df: pd.DataFrame,
     preorder_df: pd.DataFrame,
-    pallet_daily_cost: float,
-    box_handling_cost: float,
-    annual_interest_rate: float,
 ) -> pd.DataFrame:
     if stock_df.empty:
         return pd.DataFrame()
@@ -1925,16 +1949,11 @@ def build_inventory_cost_dataset(
         ]
         .drop_duplicates("ITEM_CODE")
     )
-    center_meta = (
-        preorder_df[["CENTER_CODE", "CENTER_NM"]]
-        .drop_duplicates("CENTER_CODE")
-        .assign(CENTER_CODE=lambda df: df["CENTER_CODE"].map(normalize_center_code))
-    )
+    center_meta = preorder_df[["CENTER_CODE", "CENTER_NM"]].drop_duplicates("CENTER_CODE")
 
-    cost_df = stock_df.copy()
-    cost_df["CENTER_CODE"] = cost_df["CENTER_CODE"].map(normalize_center_code)
     cost_df = (
-        cost_df.merge(item_meta, on="ITEM_CODE", how="left")
+        stock_df
+        .merge(item_meta, on="ITEM_CODE", how="left")
         .merge(dim_master, on="ITEM_CODE", how="left")
         .merge(center_meta, on="CENTER_CODE", how="left")
     )
@@ -1946,7 +1965,7 @@ def build_inventory_cost_dataset(
 
     if not sales_df.empty:
         daily_sales = (
-            sales_df.groupby(["SALE_DATE", "ITEM_CODE", "CENTER_NM"], as_index=False)["CENTER_SALE_QTY"]
+            sales_df.groupby(["SALE_DATE", "ITEM_CODE", "CENTER_NM"], as_index=False, sort=False)["CENTER_SALE_QTY"]
             .sum()
             .rename(columns={"SALE_DATE": "BIZ_DT", "CENTER_SALE_QTY": "DAILY_OUTBOUND_QTY"})
         )
@@ -1956,11 +1975,10 @@ def build_inventory_cost_dataset(
 
     if not center_order_df.empty and {"ORD_DATE", "ITEM_CODE", "CENTER_CODE", "CONV_QTY"}.issubset(center_order_df.columns):
         daily_orders = (
-            center_order_df.groupby(["ORD_DATE", "ITEM_CODE", "CENTER_CODE"], as_index=False)["CONV_QTY"]
+            center_order_df.groupby(["ORD_DATE", "ITEM_CODE", "CENTER_CODE"], as_index=False, sort=False)["CONV_QTY"]
             .sum()
             .rename(columns={"ORD_DATE": "BIZ_DT", "CONV_QTY": "DAILY_INBOUND_QTY"})
         )
-        daily_orders["CENTER_CODE"] = daily_orders["CENTER_CODE"].map(normalize_center_code)
         cost_df = cost_df.merge(daily_orders, on=["BIZ_DT", "ITEM_CODE", "CENTER_CODE"], how="left")
     else:
         cost_df["DAILY_INBOUND_QTY"] = 0
@@ -1970,29 +1988,15 @@ def build_inventory_cost_dataset(
 
     cost_df = cost_df.sort_values(["ITEM_CODE", "CENTER_NM", "BIZ_DT"]).reset_index(drop=True)
 
-    def _weighted_avg(series: pd.Series, window: int) -> pd.Series:
-        weights = np.arange(1, window + 1, dtype=float)
-
-        def _wa(values: np.ndarray) -> float:
-            if len(values) == 0:
-                return np.nan
-            scoped_weights = weights[-len(values):]
-            return float(np.dot(values, scoped_weights) / scoped_weights.sum())
-
-        return series.rolling(window=window, min_periods=1).apply(_wa, raw=True)
-
-    sale_for_velocity = cost_df["DAILY_OUTBOUND_QTY"].where(cost_df["BOOK_END_QTY"] > 0)
-    sale_for_velocity = sale_for_velocity.groupby([cost_df["ITEM_CODE"], cost_df["CENTER_NM"]]).ffill()
-    cost_df["SALE_VEL_3D"] = (
-        sale_for_velocity.groupby([cost_df["ITEM_CODE"], cost_df["CENTER_NM"]])
-        .transform(lambda series: _weighted_avg(series, window=3))
-        .fillna(0)
+    group_keys = [cost_df["ITEM_CODE"], cost_df["CENTER_NM"]]
+    sale_for_velocity = (
+        cost_df["DAILY_OUTBOUND_QTY"]
+        .where(cost_df["BOOK_END_QTY"] > 0)
+        .groupby(group_keys, sort=False)
+        .ffill()
     )
-    cost_df["SALE_VEL_7D"] = (
-        sale_for_velocity.groupby([cost_df["ITEM_CODE"], cost_df["CENTER_NM"]])
-        .transform(lambda series: _weighted_avg(series, window=7))
-        .fillna(0)
-    )
+    cost_df["SALE_VEL_3D"] = _grouped_weighted_moving_average(sale_for_velocity, group_keys, 3).fillna(0)
+    cost_df["SALE_VEL_7D"] = _grouped_weighted_moving_average(sale_for_velocity, group_keys, 7).fillna(0)
     cost_df["SALE_ACCEL"] = cost_df["SALE_VEL_3D"] - cost_df["SALE_VEL_7D"]
     cost_df["EST_DAILY_DEMAND"] = np.where(
         cost_df["SALE_VEL_7D"] > 0,
@@ -2000,39 +2004,61 @@ def build_inventory_cost_dataset(
         cost_df["SALE_VEL_3D"],
     )
 
-    daily_rate = float(annual_interest_rate) / 365
-
     cost_df["PALLET_COUNT"] = np.ceil(cost_df["BOOK_END_QTY"].clip(lower=0) / cost_df["CALC_EA_PER_PALLET"])
-    cost_df["STORAGE_COST"] = cost_df["PALLET_COUNT"] * pallet_daily_cost
     cost_df["OUTBOUND_BOX_COUNT"] = np.ceil(cost_df["DAILY_OUTBOUND_QTY"].clip(lower=0) / cost_df["CALC_OB_QTY"])
     cost_df["INBOUND_BOX_COUNT"] = np.ceil(cost_df["DAILY_INBOUND_QTY"].clip(lower=0) / cost_df["CALC_OB_QTY"])
-    cost_df["OUTBOUND_HANDLING_COST"] = cost_df["OUTBOUND_BOX_COUNT"] * box_handling_cost
-    cost_df["INBOUND_HANDLING_COST"] = cost_df["INBOUND_BOX_COUNT"] * box_handling_cost
     cost_df["INVENTORY_VALUE"] = cost_df["BOOK_END_QTY"] * cost_df["ST_CPM_AMT"]
-    cost_df["CAPITAL_COST"] = cost_df["INVENTORY_VALUE"] * daily_rate
-    cost_df["TOTAL_HANDLING_COST"] = cost_df["OUTBOUND_HANDLING_COST"] + cost_df["INBOUND_HANDLING_COST"]
     cost_df["MARGIN_PER_EA"] = (cost_df["ST_SLEM_AMT"] - cost_df["ST_CPM_AMT"]).clip(lower=0)
     cost_df["STOCKOUT_OPP_COST"] = np.where(
         (cost_df["BOOK_END_QTY"] == 0) & (cost_df["EST_DAILY_DEMAND"] > 0),
         cost_df["EST_DAILY_DEMAND"] * cost_df["MARGIN_PER_EA"],
         0.0,
     )
-    cost_df["DAILY_TOTAL_COST"] = (
-        cost_df["STORAGE_COST"]
-        + cost_df["TOTAL_HANDLING_COST"]
-        + cost_df["CAPITAL_COST"]
-        + cost_df["STOCKOUT_OPP_COST"]
-    )
-    cost_df["STORAGE_COST_PER_EA"] = pallet_daily_cost / cost_df["CALC_EA_PER_PALLET"]
-    cost_df["HANDLING_COST_PER_EA"] = box_handling_cost / cost_df["CALC_OB_QTY"]
-    cost_df["CAPITAL_COST_PER_EA"] = cost_df["ST_CPM_AMT"] * daily_rate
-    cost_df["TOTAL_COST_PER_EA_PER_DAY"] = cost_df["STORAGE_COST_PER_EA"] + cost_df["CAPITAL_COST_PER_EA"]
-    cost_df["LOGISTICS_TO_SLEM_PCT"] = np.where(
-        cost_df["ST_SLEM_AMT"] > 0,
-        cost_df["TOTAL_COST_PER_EA_PER_DAY"] / cost_df["ST_SLEM_AMT"] * 100,
+    return cost_df
+
+
+def build_inventory_cost_dataset(
+    stock_df: pd.DataFrame,
+    sales_df: pd.DataFrame,
+    center_order_df: pd.DataFrame,
+    preorder_df: pd.DataFrame,
+    pallet_daily_cost: float,
+    box_handling_cost: float,
+    annual_interest_rate: float,
+) -> pd.DataFrame:
+    base_df = _build_inventory_cost_base(stock_df, sales_df, center_order_df, preorder_df)
+    if base_df.empty:
+        return base_df
+
+    daily_rate = float(annual_interest_rate) / 365
+    storage_cost = base_df["PALLET_COUNT"] * pallet_daily_cost
+    outbound_handling = base_df["OUTBOUND_BOX_COUNT"] * box_handling_cost
+    inbound_handling = base_df["INBOUND_BOX_COUNT"] * box_handling_cost
+    total_handling = outbound_handling + inbound_handling
+    capital_cost = base_df["INVENTORY_VALUE"] * daily_rate
+    storage_per_ea = pallet_daily_cost / base_df["CALC_EA_PER_PALLET"]
+    handling_per_ea = box_handling_cost / base_df["CALC_OB_QTY"]
+    capital_per_ea = base_df["ST_CPM_AMT"] * daily_rate
+    total_per_ea = storage_per_ea + capital_per_ea
+    logistics_to_slem = np.where(
+        base_df["ST_SLEM_AMT"] > 0,
+        total_per_ea / base_df["ST_SLEM_AMT"] * 100,
         np.nan,
     )
-    return cost_df
+
+    return base_df.assign(
+        STORAGE_COST=storage_cost,
+        OUTBOUND_HANDLING_COST=outbound_handling,
+        INBOUND_HANDLING_COST=inbound_handling,
+        TOTAL_HANDLING_COST=total_handling,
+        CAPITAL_COST=capital_cost,
+        DAILY_TOTAL_COST=storage_cost + total_handling + capital_cost + base_df["STOCKOUT_OPP_COST"],
+        STORAGE_COST_PER_EA=storage_per_ea,
+        HANDLING_COST_PER_EA=handling_per_ea,
+        CAPITAL_COST_PER_EA=capital_per_ea,
+        TOTAL_COST_PER_EA_PER_DAY=total_per_ea,
+        LOGISTICS_TO_SLEM_PCT=logistics_to_slem,
+    )
 
 
 def render_inventory_cost_page(
@@ -2145,13 +2171,9 @@ def render_inventory_cost_page(
     c3.metric("총 자본비용", format_won(total_capital))
     c4.metric("총 재고비용", format_won(total_cost))
 
-    inventory_view = lazy_view_selector(
-        "재고비용 보기",
-        ["비용 추이", "센터/상품별 비용", "부진재고", "상세 데이터"],
-        key="inventory_cost_view",
-    )
+    tab1, tab2, tab3, tab4 = st.tabs(["비용 추이", "센터/상품별 비용", "부진재고", "상세 데이터"])
 
-    if inventory_view == "비용 추이":
+    with tab1:
         daily_cost = (
             filtered.groupby("BIZ_DT", as_index=False)[
                 ["STORAGE_COST", "TOTAL_HANDLING_COST", "CAPITAL_COST", "DAILY_TOTAL_COST"]
@@ -2223,7 +2245,7 @@ def render_inventory_cost_page(
             fig_s.update_layout(showlegend=False)
             st.plotly_chart(fig_s, use_container_width=True)
 
-    if inventory_view == "센터/상품별 비용":
+    with tab2:
         center_cost = (
             filtered.groupby("CENTER_NM", as_index=False)["DAILY_TOTAL_COST"]
             .sum()
@@ -2269,7 +2291,7 @@ def render_inventory_cost_page(
                 hide_index=True,
             )
 
-    if inventory_view == "부진재고":
+    with tab3:
         latest_date = filtered["BIZ_DT"].max()
         latest_stock = (
             filtered[filtered["BIZ_DT"] == latest_date]
@@ -2389,7 +2411,7 @@ def render_inventory_cost_page(
             hide_index=True,
         )
 
-    if inventory_view == "상세 데이터":
+    with tab4:
         subtab_agg, subtab_unit = st.tabs(["전체 비용 (일별)", "EA당 단위 비용"])
 
         with subtab_agg:
@@ -2564,7 +2586,7 @@ def build_item_master(preorder_df: pd.DataFrame) -> pd.DataFrame:
     item_master["LABEL"] = item_master["ITEM_CODE"] + " | " + item_master["ITEM_NM"]
     item_master["reservation_to_initial_ratio"] = (
         item_master["TOTAL_RESERVATION_QTY"]
-        / item_master["TOTAL_INITIAL_ORD_QTY"].replace(0, pd.NA)
+        / item_master["TOTAL_INITIAL_ORD_QTY"].replace(0, np.nan)
         * 100
     )
     item_master = item_master.merge(md_map, on="ITEM_CODE", how="left")
@@ -2681,10 +2703,10 @@ def build_center_summary(filtered_preorder: pd.DataFrame, filtered_sales: pd.Dat
     ]
     summary[fill_cols] = summary[fill_cols].fillna(0)
     summary["예약/초도 비율(%)"] = (
-        summary["RESERVATION_QTY"] / summary["INITIAL_ORD_QTY"].replace(0, pd.NA) * 100
+        summary["RESERVATION_QTY"] / summary["INITIAL_ORD_QTY"].replace(0, np.nan) * 100
     )
     summary["예약 참여율(%)"] = (
-        summary["ORDERING_STORE_CNT"] / summary["TOTAL_STORE_CNT"].replace(0, pd.NA) * 100
+        summary["ORDERING_STORE_CNT"] / summary["TOTAL_STORE_CNT"].replace(0, np.nan) * 100
     )
     return summary.sort_values("INITIAL_ORD_QTY", ascending=False)
 
@@ -2714,10 +2736,10 @@ def build_item_summary(filtered_preorder: pd.DataFrame, filtered_sales: pd.DataF
         ["CENTER_SALE_QTY", "CENTER_SALE_AMT_VAT"]
     ].fillna(0)
     summary["예약/초도 비율(%)"] = (
-        summary["RESERVATION_QTY"] / summary["INITIAL_ORD_QTY"].replace(0, pd.NA) * 100
+        summary["RESERVATION_QTY"] / summary["INITIAL_ORD_QTY"].replace(0, np.nan) * 100
     )
     summary["판매/초도 비율(%)"] = (
-        summary["CENTER_SALE_QTY"] / summary["INITIAL_ORD_QTY"].replace(0, pd.NA) * 100
+        summary["CENTER_SALE_QTY"] / summary["INITIAL_ORD_QTY"].replace(0, np.nan) * 100
     )
     return summary.sort_values("INITIAL_ORD_QTY", ascending=False)
 
@@ -2763,7 +2785,7 @@ def build_past_reference_item_analysis(
         item_df = item_df.merge(shipped, on="ITEM_CODE", how="left")
     item_df["실출고량"] = item_df.get("실출고량", 0).fillna(0)
 
-    safe_initial = item_df["초도발주량"].replace(0, pd.NA)
+    safe_initial = item_df["초도발주량"].replace(0, np.nan)
     item_df["실제출고율(%)"] = (item_df["실출고량"] / safe_initial * 100).round(1)
     item_df["출고율"] = item_df["실출고량"] / safe_initial
     item_df["상태"] = classify_outflow_status(item_df["출고율"])
@@ -3214,7 +3236,7 @@ def render_past_simple_lookup(
     for col in ["실출고량", "실수요", "실수요금액"]:
         item_df[col] = item_df[col].fillna(0)
 
-    safe_initial = item_df["초도발주량"].replace(0, pd.NA)
+    safe_initial = item_df["초도발주량"].replace(0, np.nan)
     item_df["실출고율(%)"] = (item_df["실출고량"] / safe_initial * 100).round(1)
     item_df["출고율"] = item_df["실출고량"] / safe_initial
     item_df["실수요비율(%)"] = (item_df["실수요"] / safe_initial * 100).round(1)
@@ -3389,7 +3411,7 @@ def render_past_simple_lookup(
                 c_merged["실수요"],
                 c_merged["실출고량"],
             )
-            safe_init = c_merged["초도발주량"].replace(0, pd.NA)
+            safe_init = c_merged["초도발주량"].replace(0, np.nan)
             c_merged["출고율(7일치)(%)"] = (c_merged["실출고량"] / safe_init * 100).round(1)
 
             st.dataframe(
@@ -3492,7 +3514,7 @@ def render_past_simple_lookup(
             부진상품수=("부진여부", "sum"),
         ).reset_index()
         cat_agg.columns = [agg_level, "상품수", "총 초도발주량", "총 초기예약발주", "총 실출고량(7일치)", "총 실수요", "결품/위험 상품수", "과발주/부진 상품수"]
-        safe_tot = cat_agg["총 초도발주량"].replace(0, pd.NA)
+        safe_tot = cat_agg["총 초도발주량"].replace(0, np.nan)
         cat_agg["평균 출고율(7일치)(%)"] = (cat_agg["총 실출고량(7일치)"] / safe_tot * 100).round(1)
 
         st.dataframe(
@@ -3809,7 +3831,7 @@ def build_past_item_status_df(
         item_df[col] = item_df[col].fillna(0)
     item_df["출시일자"] = pd.to_datetime(item_df["NP_RLSE_YMD"].astype(str), format="%Y%m%d", errors="coerce")
     item_df["용량"] = item_df["ITEM_NM"].map(extract_capacity_from_name)
-    safe_initial = item_df["초도발주량"].replace(0, pd.NA)
+    safe_initial = item_df["초도발주량"].replace(0, np.nan)
     item_df["초도출고율(%)"] = (item_df["실출고량"] / safe_initial * 100).round(1)
     item_df["출고율"] = item_df["실출고량"] / safe_initial
     item_df["상태"] = classify_outflow_status(item_df["출고율"])
@@ -3859,7 +3881,7 @@ def build_past_center_raw_table(
 
     base["실출고량"] = base["실출고량"].fillna(0)
     base["실수요"] = base["실수요"].fillna(0)
-    safe_initial = base["초도발주량"].replace(0, pd.NA)
+    safe_initial = base["초도발주량"].replace(0, np.nan)
     base["초도출고율(%)"] = (base["실출고량"] / safe_initial * 100).round(1)
     base["용량"] = base["ITEM_NM"].map(extract_capacity_from_name)
     return base
@@ -4106,20 +4128,31 @@ def render_past_dashboard_page(
     base_date: pd.Timestamp,
 ) -> None:
     st.markdown("## 과거 신상품 조회")
-    past_view = lazy_view_selector(
-        "과거 신상품 조회 보기",
-        ["과거 신상품 조회", "과거 Raw Data", "상품별 데이터", "상품별 상태 분석"],
-        key="past_dashboard_view",
+    tabs = st.tabs(
+        ["과거 신상품 조회", "과거 Raw Data", "상품별 데이터", "상품별 상태 분석"]
     )
-    if past_view == "과거 신상품 조회":
+    with tabs[0]:
         render_past_lookup_overview(preorder_df, sales_df, predictions_df)
-    elif past_view == "과거 Raw Data":
+    with tabs[1]:
         render_past_raw_data_tab(preorder_df, sales_df, center_order_df, stock_df, base_date)
-    elif past_view == "상품별 데이터":
+    with tabs[2]:
         render_past_product_data_detail(preorder_df, sales_df, predictions_df)
-    else:
+    with tabs[3]:
         render_past_status_analysis_tab(preorder_df, sales_df, predictions_df)
 
+
+preorder_df = load_preorder()
+sales_df = load_sales()
+center_order_df = load_center_order()
+predictions_df = load_predictions()
+item_master = build_item_master(preorder_df)
+center_master = build_center_master(preorder_df)
+
+full_preorder_df = preorder_df
+full_sales_df = sales_df
+full_center_order_df = center_order_df
+full_predictions_df = predictions_df
+full_item_master = item_master
 
 inject_theme()
 
@@ -4134,29 +4167,13 @@ if st.session_state.get("app_session_version") != APP_SESSION_VERSION:
     st.session_state.pop("login_user", None)
     st.session_state.pop("weekly_selected_item", None)
 
-login_md_map = load_item_md_mapping()
 st.session_state["valid_md_ids"] = set(
-    login_md_map.loc[login_md_map["REG_USER_ID"].ne("unassigned"), "REG_USER_ID"].dropna().tolist()
+    item_master.loc[item_master["REG_USER_ID"].ne("unassigned"), "REG_USER_ID"].dropna().tolist()
 )
 
 if not st.session_state["is_logged_in"]:
     render_login_screen()
     st.stop()
-
-preorder_df = load_preorder()
-sales_df = load_sales()
-stock_df = load_stock()
-center_order_df = load_center_order()
-predictions_df = load_predictions()
-item_master = build_item_master(preorder_df)
-center_master = build_center_master(preorder_df)
-
-full_preorder_df = preorder_df
-full_sales_df = sales_df
-full_stock_df = stock_df
-full_center_order_df = center_order_df
-full_predictions_df = predictions_df
-full_item_master = item_master
 
 logged_user = st.session_state.get("login_user", "").strip().lower()
 is_master_user = st.session_state.get("is_master_user", False)
@@ -4166,7 +4183,6 @@ if not is_master_user:
     item_master = item_master[item_master["ITEM_CODE"].isin(allowed_items)].copy()
     preorder_df = preorder_df[preorder_df["ITEM_CODE"].isin(allowed_items)].copy()
     sales_df = sales_df[sales_df["ITEM_CODE"].isin(allowed_items)].copy()
-    stock_df = stock_df[stock_df["ITEM_CODE"].isin(allowed_items)].copy()
     center_master = build_center_master(preorder_df)
 
 if item_master.empty:
@@ -4216,10 +4232,11 @@ if selected_page == "과거 신상품 조회":
         )
         st.caption("기준일 이후 데이터는 자동으로 제외됩니다.")
         st.divider()
+        _stock_connected = STOCK_PATH.exists()
         st.write("파일 연결 상태")
         status_items = [
             ("센터 발주 Raw", not full_center_order_df.empty),
-            ("센터 재고 Raw", not full_stock_df.empty),
+            ("센터 재고 Raw", _stock_connected),
             ("매출/수요 Raw", not full_sales_df.empty),
             ("예약주문 Raw", not full_preorder_df.empty),
             ("OUTFLOW_7D 예측", not full_predictions_df.empty),
@@ -4230,11 +4247,14 @@ if selected_page == "과거 신상품 조회":
             else:
                 st.warning(f"{label}: 없음")
 
+    _np_item_codes = frozenset(full_preorder_df["ITEM_CODE"].astype(str).unique())
+    with st.spinner("재고 데이터 로딩 중... (최초 1회만 수행됩니다)"):
+        past_stock_df = load_stock(_np_item_codes)
     render_past_dashboard_page(
         full_preorder_df,
         full_sales_df,
         full_center_order_df,
-        full_stock_df,
+        past_stock_df,
         full_predictions_df,
         past_base_date,
     )
@@ -4257,8 +4277,11 @@ if selected_page == "MD 발주 시뮬레이션":
     st.stop()
 
 if selected_page == "재고비용 시뮬레이션":
+    _np_item_codes = frozenset(full_preorder_df["ITEM_CODE"].astype(str).unique())
+    with st.spinner("재고 데이터 로딩 중... (최초 1회만 수행됩니다)"):
+        cost_stock_df = load_stock(_np_item_codes)
     render_inventory_cost_page(
-        full_stock_df,
+        cost_stock_df,
         full_sales_df,
         full_center_order_df,
         full_preorder_df,
@@ -4334,6 +4357,10 @@ if excluded_items:
 available_item_codes = filtered_preorder["ITEM_CODE"].unique().tolist()
 available_center_names = filtered_preorder["CENTER_NM"].unique().tolist()
 available_center_codes = filtered_preorder["CENTER_CODE"].unique().tolist()
+
+_np_item_codes = frozenset(full_preorder_df["ITEM_CODE"].astype(str).unique())
+with st.spinner("재고 데이터 로딩 중... (최초 1회만 수행됩니다)"):
+    stock_df = load_stock(_np_item_codes)
 
 filtered_sales = sales_df[
     sales_df["ITEM_CODE"].isin(available_item_codes) & sales_df["CENTER_NM"].isin(available_center_names)
