@@ -1844,48 +1844,30 @@ def load_item_dimension_master() -> pd.DataFrame:
         df[col] = pd.to_numeric(df[col].astype(str).str.replace(",", ""), errors="coerce").fillna(0)
     df["ITEM_CODE"] = df["ITEM_CD"].astype(str).str.strip()
 
-    def _col(name: str) -> pd.Series:
-        if name in df.columns:
-            return df[name]
-        return pd.Series(0.0, index=df.index)
+    def _ea_per_pallet(row: pd.Series) -> float:
+        if row.get("PLLT_OBT_QTY", 0) > 0:
+            return float(row["PLLT_OBT_QTY"])
 
-    def _safe_floor_div(numer: float, denom: pd.Series) -> pd.Series:
-        return np.floor(numer / denom.where(denom > 0, 1))
+        outer_w = row.get("OB_WDTH_LENG", 0)
+        outer_d = row.get("OB_HGHT_LENG", 0)
+        outer_h = row.get("OB_HG", 0)
+        outer_qty = row.get("OB_OBT_QTY", 0)
+        if outer_w >= _MIN_DIM_CM and outer_d >= _MIN_DIM_CM and outer_h >= _MIN_DIM_CM and outer_qty > 0:
+            per_layer = np.floor(_PLT_W_CM / outer_w) * np.floor(_PLT_D_CM / outer_d)
+            stack_layers = row.get("PLLT_TSNG_QTY", 0)
+            layers = stack_layers if stack_layers > 0 else np.floor(_PLT_MAX_H_CM / outer_h)
+            return max(float(per_layer), 1) * max(float(layers), 1) * outer_qty
 
-    pllt_obt = _col("PLLT_OBT_QTY")
-    outer_w = _col("OB_WDTH_LENG")
-    outer_d = _col("OB_HGHT_LENG")
-    outer_h = _col("OB_HG")
-    outer_qty = _col("OB_OBT_QTY")
-    stack_layers = _col("PLLT_TSNG_QTY")
-    item_w = _col("ITEM_WDTH_LENG")
-    item_d = _col("ITEM_HGHT_LENG")
-    item_h = _col("ITEM_HG")
+        item_w = row.get("ITEM_WDTH_LENG", 0)
+        item_d = row.get("ITEM_HGHT_LENG", 0)
+        item_h = row.get("ITEM_HG", 0)
+        if item_w >= _MIN_DIM_CM and item_d >= _MIN_DIM_CM and item_h >= _MIN_DIM_CM:
+            per_layer = np.floor(_PLT_W_CM / item_w) * np.floor(_PLT_D_CM / item_d)
+            layers = np.floor(_PLT_MAX_H_CM / item_h)
+            return max(float(per_layer), 1) * max(float(layers), 1)
+        return np.nan
 
-    outer_valid = (
-        (outer_w >= _MIN_DIM_CM)
-        & (outer_d >= _MIN_DIM_CM)
-        & (outer_h >= _MIN_DIM_CM)
-        & (outer_qty > 0)
-    )
-    outer_per_layer = _safe_floor_div(_PLT_W_CM, outer_w) * _safe_floor_div(_PLT_D_CM, outer_d)
-    outer_layers = np.where(stack_layers > 0, stack_layers, _safe_floor_div(_PLT_MAX_H_CM, outer_h))
-    outer_ea = np.maximum(outer_per_layer, 1.0) * np.maximum(outer_layers, 1.0) * outer_qty
-
-    item_valid = (
-        (item_w >= _MIN_DIM_CM)
-        & (item_d >= _MIN_DIM_CM)
-        & (item_h >= _MIN_DIM_CM)
-    )
-    item_per_layer = _safe_floor_div(_PLT_W_CM, item_w) * _safe_floor_div(_PLT_D_CM, item_d)
-    item_layers = _safe_floor_div(_PLT_MAX_H_CM, item_h)
-    item_ea = np.maximum(item_per_layer, 1.0) * np.maximum(item_layers, 1.0)
-
-    df["CALC_EA_PER_PALLET"] = np.where(
-        pllt_obt > 0,
-        pllt_obt.astype(float),
-        np.where(outer_valid, outer_ea, np.where(item_valid, item_ea, np.nan)),
-    )
+    df["CALC_EA_PER_PALLET"] = df.apply(_ea_per_pallet, axis=1)
     median_ea = df["CALC_EA_PER_PALLET"].median()
     df["CALC_EA_PER_PALLET"] = df["CALC_EA_PER_PALLET"].fillna(median_ea).clip(lower=1.0)
     if "OB_OBT_QTY" in df.columns:
@@ -1896,38 +1878,15 @@ def load_item_dimension_master() -> pd.DataFrame:
     return df[["ITEM_CODE", "CALC_EA_PER_PALLET", "CALC_OB_QTY"]].drop_duplicates("ITEM_CODE")
 
 
-def _grouped_weighted_moving_average(
-    series: pd.Series,
-    group_keys: list,
-    window: int,
-) -> pd.Series:
-    weights = np.arange(window, 0, -1, dtype=float)
-    grouped = series.groupby(group_keys, sort=False)
-    cumcount = grouped.cumcount().to_numpy()
-    n = len(series)
-    num = np.zeros(n, dtype=float)
-    den = np.zeros(n, dtype=float)
-    has_nan = np.zeros(n, dtype=bool)
-    for k in range(window):
-        shifted = grouped.shift(k).to_numpy()
-        in_win = cumcount >= k
-        is_nan = np.isnan(shifted)
-        has_nan |= in_win & is_nan
-        valid = in_win & ~is_nan
-        num[valid] += weights[k] * shifted[valid]
-        den[valid] += weights[k]
-    out = np.full(n, np.nan, dtype=float)
-    safe = (den > 0) & ~has_nan
-    out[safe] = num[safe] / den[safe]
-    return pd.Series(out, index=series.index)
-
-
 @st.cache_data(show_spinner=False)
-def _build_inventory_cost_base(
+def build_inventory_cost_dataset(
     stock_df: pd.DataFrame,
     sales_df: pd.DataFrame,
     center_order_df: pd.DataFrame,
     preorder_df: pd.DataFrame,
+    pallet_daily_cost: float,
+    box_handling_cost: float,
+    annual_interest_rate: float,
 ) -> pd.DataFrame:
     if stock_df.empty:
         return pd.DataFrame()
@@ -1939,11 +1898,16 @@ def _build_inventory_cost_base(
         ]
         .drop_duplicates("ITEM_CODE")
     )
-    center_meta = preorder_df[["CENTER_CODE", "CENTER_NM"]].drop_duplicates("CENTER_CODE")
+    center_meta = (
+        preorder_df[["CENTER_CODE", "CENTER_NM"]]
+        .drop_duplicates("CENTER_CODE")
+        .assign(CENTER_CODE=lambda df: df["CENTER_CODE"].map(normalize_center_code))
+    )
 
+    cost_df = stock_df.copy()
+    cost_df["CENTER_CODE"] = cost_df["CENTER_CODE"].map(normalize_center_code)
     cost_df = (
-        stock_df
-        .merge(item_meta, on="ITEM_CODE", how="left")
+        cost_df.merge(item_meta, on="ITEM_CODE", how="left")
         .merge(dim_master, on="ITEM_CODE", how="left")
         .merge(center_meta, on="CENTER_CODE", how="left")
     )
@@ -1955,7 +1919,7 @@ def _build_inventory_cost_base(
 
     if not sales_df.empty:
         daily_sales = (
-            sales_df.groupby(["SALE_DATE", "ITEM_CODE", "CENTER_NM"], as_index=False, sort=False)["CENTER_SALE_QTY"]
+            sales_df.groupby(["SALE_DATE", "ITEM_CODE", "CENTER_NM"], as_index=False)["CENTER_SALE_QTY"]
             .sum()
             .rename(columns={"SALE_DATE": "BIZ_DT", "CENTER_SALE_QTY": "DAILY_OUTBOUND_QTY"})
         )
@@ -1965,10 +1929,11 @@ def _build_inventory_cost_base(
 
     if not center_order_df.empty and {"ORD_DATE", "ITEM_CODE", "CENTER_CODE", "CONV_QTY"}.issubset(center_order_df.columns):
         daily_orders = (
-            center_order_df.groupby(["ORD_DATE", "ITEM_CODE", "CENTER_CODE"], as_index=False, sort=False)["CONV_QTY"]
+            center_order_df.groupby(["ORD_DATE", "ITEM_CODE", "CENTER_CODE"], as_index=False)["CONV_QTY"]
             .sum()
             .rename(columns={"ORD_DATE": "BIZ_DT", "CONV_QTY": "DAILY_INBOUND_QTY"})
         )
+        daily_orders["CENTER_CODE"] = daily_orders["CENTER_CODE"].map(normalize_center_code)
         cost_df = cost_df.merge(daily_orders, on=["BIZ_DT", "ITEM_CODE", "CENTER_CODE"], how="left")
     else:
         cost_df["DAILY_INBOUND_QTY"] = 0
@@ -1978,15 +1943,29 @@ def _build_inventory_cost_base(
 
     cost_df = cost_df.sort_values(["ITEM_CODE", "CENTER_NM", "BIZ_DT"]).reset_index(drop=True)
 
-    group_keys = [cost_df["ITEM_CODE"], cost_df["CENTER_NM"]]
-    sale_for_velocity = (
-        cost_df["DAILY_OUTBOUND_QTY"]
-        .where(cost_df["BOOK_END_QTY"] > 0)
-        .groupby(group_keys, sort=False)
-        .ffill()
+    def _weighted_avg(series: pd.Series, window: int) -> pd.Series:
+        weights = np.arange(1, window + 1, dtype=float)
+
+        def _wa(values: np.ndarray) -> float:
+            if len(values) == 0:
+                return np.nan
+            scoped_weights = weights[-len(values):]
+            return float(np.dot(values, scoped_weights) / scoped_weights.sum())
+
+        return series.rolling(window=window, min_periods=1).apply(_wa, raw=True)
+
+    sale_for_velocity = cost_df["DAILY_OUTBOUND_QTY"].where(cost_df["BOOK_END_QTY"] > 0)
+    sale_for_velocity = sale_for_velocity.groupby([cost_df["ITEM_CODE"], cost_df["CENTER_NM"]]).ffill()
+    cost_df["SALE_VEL_3D"] = (
+        sale_for_velocity.groupby([cost_df["ITEM_CODE"], cost_df["CENTER_NM"]])
+        .transform(lambda series: _weighted_avg(series, window=3))
+        .fillna(0)
     )
-    cost_df["SALE_VEL_3D"] = _grouped_weighted_moving_average(sale_for_velocity, group_keys, 3).fillna(0)
-    cost_df["SALE_VEL_7D"] = _grouped_weighted_moving_average(sale_for_velocity, group_keys, 7).fillna(0)
+    cost_df["SALE_VEL_7D"] = (
+        sale_for_velocity.groupby([cost_df["ITEM_CODE"], cost_df["CENTER_NM"]])
+        .transform(lambda series: _weighted_avg(series, window=7))
+        .fillna(0)
+    )
     cost_df["SALE_ACCEL"] = cost_df["SALE_VEL_3D"] - cost_df["SALE_VEL_7D"]
     cost_df["EST_DAILY_DEMAND"] = np.where(
         cost_df["SALE_VEL_7D"] > 0,
@@ -1994,61 +1973,39 @@ def _build_inventory_cost_base(
         cost_df["SALE_VEL_3D"],
     )
 
+    daily_rate = float(annual_interest_rate) / 365
+
     cost_df["PALLET_COUNT"] = np.ceil(cost_df["BOOK_END_QTY"].clip(lower=0) / cost_df["CALC_EA_PER_PALLET"])
+    cost_df["STORAGE_COST"] = cost_df["PALLET_COUNT"] * pallet_daily_cost
     cost_df["OUTBOUND_BOX_COUNT"] = np.ceil(cost_df["DAILY_OUTBOUND_QTY"].clip(lower=0) / cost_df["CALC_OB_QTY"])
     cost_df["INBOUND_BOX_COUNT"] = np.ceil(cost_df["DAILY_INBOUND_QTY"].clip(lower=0) / cost_df["CALC_OB_QTY"])
+    cost_df["OUTBOUND_HANDLING_COST"] = cost_df["OUTBOUND_BOX_COUNT"] * box_handling_cost
+    cost_df["INBOUND_HANDLING_COST"] = cost_df["INBOUND_BOX_COUNT"] * box_handling_cost
     cost_df["INVENTORY_VALUE"] = cost_df["BOOK_END_QTY"] * cost_df["ST_CPM_AMT"]
+    cost_df["CAPITAL_COST"] = cost_df["INVENTORY_VALUE"] * daily_rate
+    cost_df["TOTAL_HANDLING_COST"] = cost_df["OUTBOUND_HANDLING_COST"] + cost_df["INBOUND_HANDLING_COST"]
     cost_df["MARGIN_PER_EA"] = (cost_df["ST_SLEM_AMT"] - cost_df["ST_CPM_AMT"]).clip(lower=0)
     cost_df["STOCKOUT_OPP_COST"] = np.where(
         (cost_df["BOOK_END_QTY"] == 0) & (cost_df["EST_DAILY_DEMAND"] > 0),
         cost_df["EST_DAILY_DEMAND"] * cost_df["MARGIN_PER_EA"],
         0.0,
     )
-    return cost_df
-
-
-def build_inventory_cost_dataset(
-    stock_df: pd.DataFrame,
-    sales_df: pd.DataFrame,
-    center_order_df: pd.DataFrame,
-    preorder_df: pd.DataFrame,
-    pallet_daily_cost: float,
-    box_handling_cost: float,
-    annual_interest_rate: float,
-) -> pd.DataFrame:
-    base_df = _build_inventory_cost_base(stock_df, sales_df, center_order_df, preorder_df)
-    if base_df.empty:
-        return base_df
-
-    daily_rate = float(annual_interest_rate) / 365
-    storage_cost = base_df["PALLET_COUNT"] * pallet_daily_cost
-    outbound_handling = base_df["OUTBOUND_BOX_COUNT"] * box_handling_cost
-    inbound_handling = base_df["INBOUND_BOX_COUNT"] * box_handling_cost
-    total_handling = outbound_handling + inbound_handling
-    capital_cost = base_df["INVENTORY_VALUE"] * daily_rate
-    storage_per_ea = pallet_daily_cost / base_df["CALC_EA_PER_PALLET"]
-    handling_per_ea = box_handling_cost / base_df["CALC_OB_QTY"]
-    capital_per_ea = base_df["ST_CPM_AMT"] * daily_rate
-    total_per_ea = storage_per_ea + capital_per_ea
-    logistics_to_slem = np.where(
-        base_df["ST_SLEM_AMT"] > 0,
-        total_per_ea / base_df["ST_SLEM_AMT"] * 100,
+    cost_df["DAILY_TOTAL_COST"] = (
+        cost_df["STORAGE_COST"]
+        + cost_df["TOTAL_HANDLING_COST"]
+        + cost_df["CAPITAL_COST"]
+        + cost_df["STOCKOUT_OPP_COST"]
+    )
+    cost_df["STORAGE_COST_PER_EA"] = pallet_daily_cost / cost_df["CALC_EA_PER_PALLET"]
+    cost_df["HANDLING_COST_PER_EA"] = box_handling_cost / cost_df["CALC_OB_QTY"]
+    cost_df["CAPITAL_COST_PER_EA"] = cost_df["ST_CPM_AMT"] * daily_rate
+    cost_df["TOTAL_COST_PER_EA_PER_DAY"] = cost_df["STORAGE_COST_PER_EA"] + cost_df["CAPITAL_COST_PER_EA"]
+    cost_df["LOGISTICS_TO_SLEM_PCT"] = np.where(
+        cost_df["ST_SLEM_AMT"] > 0,
+        cost_df["TOTAL_COST_PER_EA_PER_DAY"] / cost_df["ST_SLEM_AMT"] * 100,
         np.nan,
     )
-
-    return base_df.assign(
-        STORAGE_COST=storage_cost,
-        OUTBOUND_HANDLING_COST=outbound_handling,
-        INBOUND_HANDLING_COST=inbound_handling,
-        TOTAL_HANDLING_COST=total_handling,
-        CAPITAL_COST=capital_cost,
-        DAILY_TOTAL_COST=storage_cost + total_handling + capital_cost + base_df["STOCKOUT_OPP_COST"],
-        STORAGE_COST_PER_EA=storage_per_ea,
-        HANDLING_COST_PER_EA=handling_per_ea,
-        CAPITAL_COST_PER_EA=capital_per_ea,
-        TOTAL_COST_PER_EA_PER_DAY=total_per_ea,
-        LOGISTICS_TO_SLEM_PCT=logistics_to_slem,
-    )
+    return cost_df
 
 
 def render_inventory_cost_page(
