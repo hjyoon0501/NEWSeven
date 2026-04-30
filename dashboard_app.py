@@ -36,6 +36,10 @@ PREDICTIONS_PATH = APP_DIR / "predictions.parquet"
 MASTER_ITEM_PATH = DATA_DIR / "A7_신상품_상품마스터.csv"
 CENTER_MAP_PATH = DATA_DIR / "target_centers_for_map.csv"
 COST_TS_PATH = APP_DIR / "cost_comparison_timeseries.csv"
+COST_TS_CANDIDATES = [
+    APP_DIR / "cost_comparison_timeseries.csv",
+    DATA_DIR / "cost_comparison_timeseries.csv",
+]
 W_RECOMMEND_CANDIDATES = [
     APP_DIR / "asymmetric_recommended_W.csv",
     DATA_DIR / "asymmetric_recommended_W.csv",
@@ -46,6 +50,32 @@ W_RECOMMEND_CANDIDATES = [
     DATA_DIR / "W_RECOMMEND.csv",
     DATA_DIR / "W_RECOMMEND.xlsx",
 ]
+
+
+def resolve_existing_path(candidates: list[Path]) -> Path | None:
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+
+    # Streamlit Cloud runs on Linux, where file names are case-sensitive.
+    # Fall back to a case-insensitive lookup so GitHub uploads with a
+    # different casing still resolve to the same local artifact.
+    for candidate in candidates:
+        parent = candidate.parent
+        if not parent.exists():
+            continue
+        target_name = candidate.name.lower()
+        for child in parent.iterdir():
+            if child.name.lower() == target_name:
+                return child
+    return None
+
+
+def file_signature(path: Path | None) -> tuple[str, int, int] | None:
+    if path is None or not path.exists():
+        return None
+    stat = path.stat()
+    return (str(path.resolve()), int(stat.st_mtime), int(stat.st_size))
 
 MASTER_ACCOUNT_ID = "master"
 MASTER_ACCOUNT_PASSWORD = "master123!"
@@ -928,14 +958,23 @@ def style_figure(fig):
 
 
 @st.cache_data(show_spinner=False)
-def load_cost_timeseries() -> pd.DataFrame:
+def _load_cost_timeseries_cached(path_text: str | None, signature: tuple[str, int, int] | None) -> pd.DataFrame:
     """cost_comparison_timeseries.csv 를 로드한다."""
-    if not COST_TS_PATH.exists():
+    if path_text is None or signature is None:
         return pd.DataFrame()
-    df = pd.read_csv(COST_TS_PATH, encoding="utf-8-sig")
+    path = Path(path_text)
+    if not path.exists():
+        return pd.DataFrame()
+    df = pd.read_csv(path, encoding="utf-8-sig")
     if "NP_RLSE_YMD" in df.columns:
         df["NP_RLSE_YMD"] = pd.to_datetime(df["NP_RLSE_YMD"], errors="coerce")
     return df
+
+
+def load_cost_timeseries() -> pd.DataFrame:
+    path = resolve_existing_path(COST_TS_CANDIDATES)
+    signature = file_signature(path)
+    return _load_cost_timeseries_cached(str(path) if path else None, signature)
 
 
 def get_latest_week_range(item_master: pd.DataFrame) -> tuple[pd.Timestamp, pd.Timestamp]:
