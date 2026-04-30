@@ -2355,7 +2355,7 @@ def _render_initial_order_cost_tab(
         st.markdown(
             f"""
             <div class="insight-card">
-                <strong>📊 MD 실제 발주와 비교하여 <span style="color:#E15759;font-size:1.1em">{savings_pct:.1f}%</span>의 감소</strong>
+                <strong>MD 실제 발주와 비교하여 <span style="color:#E15759;font-size:1.1em">{savings_pct:.1f}%</span>의 감소</strong>
                 ({format_won(savings)})
             </div>
             """,
