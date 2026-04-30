@@ -2231,7 +2231,7 @@ def _render_initial_order_cost_tab(
 
     _n_releases = len(ts)
     _period_label = f"{ts['NP_RLSE_YMD'].min().strftime('%Y-%m-%d')} ~ {ts['NP_RLSE_YMD'].max().strftime('%Y-%m-%d')}" if _n_releases > 0 else ""
-    st.info(f"📅 분석 기간: **{_period_label}** (출시 {_n_releases}건)")
+    st.info(f"분석 기간: **{_period_label}** (출시 {_n_releases}건)")
 
     k1, k2, k3, k4 = st.columns(4)
     k1.metric("MD 총비용", format_won(md_total))
