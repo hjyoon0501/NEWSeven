@@ -35,6 +35,7 @@ CENTER_ORDER_PATH = APP_DIR / "A1_final_center_order.csv"
 PREDICTIONS_PATH = APP_DIR / "predictions.parquet"
 MASTER_ITEM_PATH = DATA_DIR / "A7_신상품_상품마스터.csv"
 CENTER_MAP_PATH = DATA_DIR / "target_centers_for_map.csv"
+COST_TS_PATH = APP_DIR / "cost_comparison_timeseries.csv"
 W_RECOMMEND_CANDIDATES = [
     APP_DIR / "asymmetric_recommended_W.csv",
     DATA_DIR / "asymmetric_recommended_W.csv",
@@ -926,6 +927,17 @@ def style_figure(fig):
     return fig
 
 
+@st.cache_data(show_spinner=False)
+def load_cost_timeseries() -> pd.DataFrame:
+    """cost_comparison_timeseries.csv 를 로드한다."""
+    if not COST_TS_PATH.exists():
+        return pd.DataFrame()
+    df = pd.read_csv(COST_TS_PATH, encoding="utf-8-sig")
+    if "NP_RLSE_YMD" in df.columns:
+        df["NP_RLSE_YMD"] = pd.to_datetime(df["NP_RLSE_YMD"], errors="coerce")
+    return df
+
+
 def get_latest_week_range(item_master: pd.DataFrame) -> tuple[pd.Timestamp, pd.Timestamp]:
     latest_date = item_master["NP_RLSE_DATE"].max()
     week_start = latest_date - pd.Timedelta(days=latest_date.weekday())
@@ -1629,12 +1641,29 @@ def render_md_order_simulation_tab(
         st.info("출시일을 1개 이상 선택해주세요.")
         return
 
-    unit_choice = st.radio("단위", ["EA", "BOX"], horizontal=True, key="md_sim_unit")
+    filter_row = st.columns([1, 1, 2])
+    with filter_row[0]:
+        unit_choice = st.radio("단위", ["EA", "BOX"], horizontal=True, key="md_sim_unit")
     unit_divisor = 1 if unit_choice == "EA" else 10
 
     scoped = base[base["출시일"].isin(selected_dates)].copy()
 
-    keyword = st.text_input("상품 검색", placeholder="상품코드 또는 상품명을 입력하세요", key="md_sim_keyword_matrix")
+    selected_mddv_sim: list = []
+    with filter_row[1]:
+        if "ITEM_MDDV_NM" in scoped.columns:
+            mddv_options = sorted(scoped["ITEM_MDDV_NM"].dropna().astype(str).unique().tolist())
+            selected_mddv_sim = st.multiselect(
+                "중분류",
+                options=mddv_options,
+                default=[],
+                key="md_sim_mddv",
+                help="비워두면 전체 중분류",
+            )
+            if selected_mddv_sim:
+                scoped = scoped[scoped["ITEM_MDDV_NM"].isin(selected_mddv_sim)]
+
+    with filter_row[2]:
+        keyword = st.text_input("상품 검색", placeholder="상품코드 또는 상품명을 입력하세요", key="md_sim_keyword_matrix")
     if keyword.strip():
         raw_keyword = keyword.strip()
         scoped = scoped[
@@ -1683,7 +1712,8 @@ def render_md_order_simulation_tab(
     state_key = "md_sim_matrix_values"
     signature_key = "md_sim_matrix_signature"
     edit_key = "md_sim_matrix_editing"
-    signature = "|".join([str(date_value) for date_value in selected_dates]) + f"|{keyword}|{unit_choice}"
+    _mddv_sig = ",".join(sorted(selected_mddv_sim)) if "ITEM_MDDV_NM" in base.columns and selected_mddv_sim else ""
+    signature = "|".join([str(date_value) for date_value in selected_dates]) + f"|{keyword}|{unit_choice}|{_mddv_sig}"
     default_md = ml_pivot.copy()
     if st.session_state.get(signature_key) != signature:
         st.session_state[signature_key] = signature
@@ -1716,12 +1746,12 @@ def render_md_order_simulation_tab(
         md_column_by_center[center_code] = md_col
         editor_df[ml_col] = display_ml[center_code].values
         editor_df[md_col] = display_md[center_code].values
-        column_config[ml_col] = st.column_config.NumberColumn(f"{center_name} 모델", format="%,.0f")
+        column_config[ml_col] = st.column_config.NumberColumn(f"{center_name} 모델", format="%d")
         column_config[md_col] = st.column_config.NumberColumn(
             f"MD 입력 | {center_name}",
             min_value=0,
             step=1,
-            format="%,.0f",
+            format="%d",
             help="MD가 직접 수정하는 입력 칸입니다.",
         )
         disabled_cols.append(ml_col)
@@ -2061,13 +2091,782 @@ def build_inventory_cost_dataset(
     )
 
 
+# ── 초도 물량 비용 비교 하위 탭 ──────────────────────────────────────────
+def _render_initial_order_cost_tab(
+    cost_ts: pd.DataFrame,
+    predictions_df: pd.DataFrame,
+    preorder_df: pd.DataFrame,
+    date_start=None,
+    date_end=None,
+) -> None:
+    """cost_comparison_timeseries.csv 기반 초도 물량(1주) 비용 비교 시각화."""
+    st.markdown("#### 초도 물량 비용 비교 (ML vs MD)")
+    st.caption(
+        "신상품 출시마다의 초도 발주(1주치) 기준으로 MD 실제 발주와 ML 예측의 비용 차이를 비교합니다. "
+        "사이드바에서 분석 기간을 조정하면 그래프가 갱신됩니다."
+    )
+
+    if cost_ts.empty:
+        st.info("cost_comparison_timeseries.csv 파일이 없거나 비어 있습니다.")
+        return
+
+    # ─ 컬럼 이름 자동 감지 (인코딩 문제 대비) ─────────────────────────────
+    _col_map = {}
+    for c in cost_ts.columns:
+        _cl = c.strip()
+        if "MD" in _cl and "재고비용" in _cl and "누적" not in _cl:
+            _col_map["MD_재고비용"] = c
+        elif "ML" in _cl and "재고비용" in _cl and "누적" not in _cl:
+            _col_map["ML_재고비용"] = c
+        elif "MD" in _cl and "하역비" in _cl and "누적" not in _cl:
+            _col_map["MD_하역비"] = c
+        elif "ML" in _cl and "하역비" in _cl and "누적" not in _cl:
+            _col_map["ML_하역비"] = c
+        elif "MD" in _cl and "결품기회비용" in _cl and "누적" not in _cl:
+            _col_map["MD_결품기회비용"] = c
+        elif "ML" in _cl and "결품기회비용" in _cl and "누적" not in _cl:
+            _col_map["ML_결품기회비용"] = c
+        elif "MD" in _cl and "총비용" in _cl and "누적" not in _cl:
+            _col_map["MD_총비용"] = c
+        elif "ML" in _cl and "총비용" in _cl and "누적" not in _cl:
+            _col_map["ML_총비용"] = c
+        elif "절감" in _cl and "누적" not in _cl:
+            _col_map["절감액"] = c
+        elif "MD" in _cl and "재고비용" in _cl and "누적" in _cl:
+            _col_map["MD_재고비용_누적"] = c
+        elif "ML" in _cl and "재고비용" in _cl and "누적" in _cl:
+            _col_map["ML_재고비용_누적"] = c
+        elif "MD" in _cl and "결품기회비용" in _cl and "누적" in _cl:
+            _col_map["MD_결품기회비용_누적"] = c
+        elif "ML" in _cl and "결품기회비용" in _cl and "누적" in _cl:
+            _col_map["ML_결품기회비용_누적"] = c
+        elif "MD" in _cl and "하역비" in _cl and "누적" in _cl:
+            _col_map["MD_하역비_누적"] = c
+        elif "ML" in _cl and "하역비" in _cl and "누적" in _cl:
+            _col_map["ML_하역비_누적"] = c
+        elif "MD" in _cl and "총비용" in _cl and "누적" in _cl:
+            _col_map["MD_총비용_누적"] = c
+        elif "ML" in _cl and "총비용" in _cl and "누적" in _cl:
+            _col_map["ML_총비용_누적"] = c
+        elif "절감" in _cl and "누적" in _cl:
+            _col_map["절감액_누적"] = c
+
+    _need = {"MD_재고비용", "ML_재고비용", "MD_하역비", "ML_하역비", "MD_결품기회비용", "ML_결품기회비용", "MD_총비용", "ML_총비용"}
+    if not _need.issubset(_col_map.keys()):
+        st.warning(f"CSV 컬럼을 인식할 수 없습니다. 감지된 항목: {list(_col_map.keys())}")
+        return
+
+    ts = cost_ts.dropna(subset=["NP_RLSE_YMD"]).sort_values("NP_RLSE_YMD").copy()
+
+    # ─ 사이드바 기간 필터 적용 ────────────────────────────────────────────
+    if date_start is not None and date_end is not None:
+        ts = ts[
+            (ts["NP_RLSE_YMD"].dt.date >= date_start)
+            & (ts["NP_RLSE_YMD"].dt.date <= date_end)
+        ].copy()
+    if ts.empty:
+        st.info("선택한 기간에 해당하는 출시 데이터가 없습니다.")
+        return
+
+    # ─ 필터 후 누적을 다시 계산 ───────────────────────────────────────────
+    for kind in ["재고비용", "하역비", "결품기회비용", "총비용"]:
+        for prefix in ["MD", "ML"]:
+            base_key = f"{prefix}_{kind}"
+            cum_col = f"__{prefix}_{kind}_누적"
+            if base_key in _col_map:
+                ts[cum_col] = ts[_col_map[base_key]].cumsum()
+                _col_map[f"{prefix}_{kind}_누적"] = cum_col
+
+    # ─ 연간 총비용 KPI ────────────────────────────────────────────────────
+    md_total = ts[_col_map["MD_총비용"]].sum()
+    ml_total = ts[_col_map["ML_총비용"]].sum()
+    savings = md_total - ml_total
+    savings_pct = (savings / md_total * 100) if md_total != 0 else 0
+
+    md_inv = ts[_col_map["MD_재고비용"]].sum()
+    ml_inv = ts[_col_map["ML_재고비용"]].sum()
+    md_hand = ts[_col_map["MD_하역비"]].sum()
+    ml_hand = ts[_col_map["ML_하역비"]].sum()
+    md_stock = ts[_col_map["MD_결품기회비용"]].sum()
+    ml_stock = ts[_col_map["ML_결품기회비용"]].sum()
+
+    _n_releases = len(ts)
+    _period_label = f"{ts['NP_RLSE_YMD'].min().strftime('%Y-%m-%d')} ~ {ts['NP_RLSE_YMD'].max().strftime('%Y-%m-%d')}" if _n_releases > 0 else ""
+    st.info(f"📅 분석 기간: **{_period_label}** (출시 {_n_releases}건)")
+
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("MD 총비용", format_won(md_total))
+    k2.metric(
+        "ML 총비용", format_won(ml_total),
+        delta=format_won(ml_total - md_total),
+        delta_color="inverse",
+    )
+    k3.metric("절감액", format_won(savings))
+    k4.metric("절감률", f"{savings_pct:.1f}%")
+
+    st.divider()
+
+    # ─ 시계열 비교 + 비용 항목별 비교 ──────────────────────────────────────
+    sub_ts, sub_bar, sub_detail = st.tabs(["시계열 비교", "비용 항목별 비교", "상품·센터별 상세"])
+
+    # ─── 시계열 비교 ─────────────────────────────────────────────────────
+    with sub_ts:
+        st.markdown("##### 누적 비용 시계열 (출시일 기준)")
+
+        def _cost_line_chart(dates, y_md, y_ml, name_md, name_ml, title, unit="백만원"):
+            _fig = go.Figure()
+            _fig.add_trace(go.Scatter(
+                x=dates, y=y_md / 1e6, mode="lines", name=name_md,
+                line=dict(color="#E15759", width=2.5),
+            ))
+            _fig.add_trace(go.Scatter(
+                x=dates, y=y_ml / 1e6, mode="lines", name=name_ml,
+                line=dict(color="#4E79A7", width=2.5),
+                fill="tonexty",
+                fillcolor="rgba(78,121,167,0.13)",
+            ))
+            _fig.update_layout(
+                title=dict(text=title, font=dict(size=13)),
+                xaxis_title="출시일",
+                xaxis=dict(range=[dates.min(), dates.max()]),
+                yaxis_title=f"비용 ({unit})",
+                height=400,
+                legend=dict(orientation="h", yanchor="top", y=-0.28, x=0.5, xanchor="center"),
+                margin=dict(t=45, b=90, l=60, r=20),
+            )
+            style_figure(_fig)
+            return _fig
+
+        _col_l, _col_r = st.columns(2)
+        with _col_l:
+            _md_tot_cum = ts[_col_map["MD_총비용_누적"]] if "MD_총비용_누적" in _col_map else ts[_col_map["MD_총비용"]].cumsum()
+            _ml_tot_cum = ts[_col_map["ML_총비용_누적"]] if "ML_총비용_누적" in _col_map else ts[_col_map["ML_총비용"]].cumsum()
+            st.plotly_chart(
+                _cost_line_chart(
+                    ts["NP_RLSE_YMD"], _md_tot_cum, _ml_tot_cum,
+                    "MD 총비용", "ML 총비용", f"총비용(누적) [{_period_label}]",
+                ),
+                use_container_width=True, config={},
+            )
+        with _col_r:
+            _md_stk_cum = ts[_col_map["MD_결품기회비용_누적"]] if "MD_결품기회비용_누적" in _col_map else ts[_col_map["MD_결품기회비용"]].cumsum()
+            _ml_stk_cum = ts[_col_map["ML_결품기회비용_누적"]] if "ML_결품기회비용_누적" in _col_map else ts[_col_map["ML_결품기회비용"]].cumsum()
+            st.plotly_chart(
+                _cost_line_chart(
+                    ts["NP_RLSE_YMD"], _md_stk_cum, _ml_stk_cum,
+                    "MD 결품기회비용", "ML 결품기회비용", f"결품기회비용(누적) [{_period_label}]",
+                ),
+                use_container_width=True, config={},
+            )
+
+        # 하단: 건별(비누적) 비용 꺾은선
+        st.markdown("##### 건별 비용 추이 (출시일별)")
+        _col_l2, _col_r2 = st.columns(2)
+        with _col_l2:
+            st.plotly_chart(
+                _cost_line_chart(
+                    ts["NP_RLSE_YMD"], ts[_col_map["MD_재고비용"]], ts[_col_map["ML_재고비용"]],
+                    "MD 재고비용", "ML 재고비용", f"재고비용(건별) [{_period_label}]",
+                ),
+                use_container_width=True, config={},
+            )
+        with _col_r2:
+            st.plotly_chart(
+                _cost_line_chart(
+                    ts["NP_RLSE_YMD"], ts[_col_map["MD_결품기회비용"]], ts[_col_map["ML_결품기회비용"]],
+                    "MD 결품기회비용", "ML 결품기회비용", f"결품기회비용(건별) [{_period_label}]",
+                ),
+                use_container_width=True, config={},
+            )
+
+    # ─── 비용 항목별 비교 ────────────────────────────────────────────────
+    with sub_bar:
+        st.markdown("##### 25년 연간 총 비용 항목별 비교")
+
+        bar_data = pd.DataFrame({
+            "비용 항목": ["재고비용", "재고비용", "하역비", "하역비", "결품기회비용", "결품기회비용"],
+            "구분": ["MD 실제발주", "ML 예측", "MD 실제발주", "ML 예측", "MD 실제발주", "ML 예측"],
+            "금액": [md_inv, ml_inv, md_hand, ml_hand, md_stock, ml_stock],
+        })
+        fig_bar = px.bar(
+            bar_data,
+            x="비용 항목", y="금액", color="구분", barmode="group",
+            color_discrete_map={"MD 실제발주": "#E15759", "ML 예측": "#4E79A7"},
+            title="비용 항목별 비교",
+            height=420,
+        )
+        fig_bar.update_layout(yaxis_title="비용 (원)")
+        # 금액 레이블 추가
+        fig_bar.update_traces(
+            texttemplate="%{y:,.0f}", textposition="outside",
+            textfont=dict(size=10),
+        )
+        style_figure(fig_bar)
+        st.plotly_chart(fig_bar, use_container_width=True, config={})
+
+        # 절감률 정보 카드
+        _inv_save = (md_inv - ml_inv) / md_inv * 100 if md_inv else 0
+        _hand_save = (md_hand - ml_hand) / md_hand * 100 if md_hand else 0
+        _stock_save = (md_stock - ml_stock) / md_stock * 100 if md_stock else 0
+        s1, s2, s3 = st.columns(3)
+        s1.metric("재고비용 절감률", f"{_inv_save:.1f}%", delta=format_won(md_inv - ml_inv))
+        s2.metric("하역비 절감률", f"{_hand_save:.1f}%", delta=format_won(md_hand - ml_hand))
+        s3.metric("결품기회비용 절감률", f"{_stock_save:.1f}%", delta=format_won(md_stock - ml_stock))
+
+        st.markdown(
+            f"""
+            <div class="insight-card">
+                <strong>📊 MD 실제 발주와 비교하여 <span style="color:#E15759;font-size:1.1em">{savings_pct:.1f}%</span>의 감소</strong>
+                ({format_won(savings)})
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    # ─── 상품·센터별 상세 ────────────────────────────────────────────────
+    with sub_detail:
+        _render_item_center_drilldown(predictions_df, preorder_df)
+
+
+
+def _render_item_center_drilldown(
+    predictions_df: pd.DataFrame,
+    preorder_df: pd.DataFrame,
+) -> None:
+    """predictions.parquet 기반 상품/센터 드릴다운 비용 분석."""
+    st.markdown("##### 상품·센터별 초도 비용 상세")
+    st.caption("상품과 센터를 선택하면 MD 발주, 순 출고량(OUTFLOW_7D), ML 예측의 비용 차이를 확인합니다.")
+
+    required_cols = {"ITEM_CODE", "CENTER_CODE", "ML_PRED_QTY", "INITIAL_ORD_QTY", "OUTFLOW_7D"}
+    if predictions_df.empty or not required_cols.issubset(predictions_df.columns):
+        st.info("predictions.parquet에 필요한 컬럼(ML_PRED_QTY, INITIAL_ORD_QTY, OUTFLOW_7D)이 없습니다.")
+        return
+
+    # 메타 조인
+    item_meta = preorder_df[["ITEM_CODE", "ITEM_NM", "ITEM_MDDV_NM"]].drop_duplicates("ITEM_CODE") if not preorder_df.empty else pd.DataFrame()
+    center_meta = preorder_df[["CENTER_CODE", "CENTER_NM"]].drop_duplicates("CENTER_CODE") if not preorder_df.empty else pd.DataFrame()
+    cost_meta_cols = ["ITEM_CODE"]
+    for _c in ["ST_CPM_AMT", "ST_SLEM_AMT", "NP_RLSE_DATE"]:
+        if _c in preorder_df.columns:
+            cost_meta_cols.append(_c)
+    cost_meta = preorder_df[cost_meta_cols].drop_duplicates("ITEM_CODE") if not preorder_df.empty else pd.DataFrame()
+
+    df = predictions_df.copy()
+    if not item_meta.empty:
+        df = df.merge(item_meta, on="ITEM_CODE", how="left")
+    if not center_meta.empty:
+        df = df.merge(center_meta, on="CENTER_CODE", how="left")
+    if not cost_meta.empty:
+        df = df.merge(cost_meta, on="ITEM_CODE", how="left", suffixes=("", "_cm"))
+        for _c in ["ST_CPM_AMT", "ST_SLEM_AMT", "NP_RLSE_DATE"]:
+            _cm = f"{_c}_cm"
+            if _c not in df.columns and _cm in df.columns:
+                df.rename(columns={_cm: _c}, inplace=True)
+            elif _cm in df.columns:
+                df[_c] = df[_c].fillna(df[_cm])
+                df.drop(columns=[_cm], inplace=True)
+
+    df["CENTER_NM"] = df.get("CENTER_NM", df["CENTER_CODE"])
+    df["ITEM_NM"] = df.get("ITEM_NM", df["ITEM_CODE"].astype(str))
+    df["ITEM_LABEL"] = df["ITEM_CODE"].astype(str) + " | " + df["ITEM_NM"].fillna("?")
+    for col in ["ML_PRED_QTY", "INITIAL_ORD_QTY", "OUTFLOW_7D"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+
+    # 필터
+    item_options = sorted(df["ITEM_LABEL"].dropna().unique().tolist())
+    center_options = sorted(df["CENTER_NM"].dropna().unique().tolist())
+
+    fc1, fc2 = st.columns(2)
+    with fc1:
+        selected_items = st.multiselect("상품 선택", options=item_options, default=[], key="icd_items")
+    with fc2:
+        selected_centers = st.multiselect("센터 선택", options=center_options, default=[], key="icd_centers")
+
+    filtered = df.copy()
+    if selected_items:
+        filtered = filtered[filtered["ITEM_LABEL"].isin(selected_items)]
+    if selected_centers:
+        filtered = filtered[filtered["CENTER_NM"].isin(selected_centers)]
+
+    if filtered.empty:
+        st.info("선택한 조건에 맞는 데이터가 없습니다.")
+        return
+
+    # 비용 계산
+    if "ST_CPM_AMT" in filtered.columns and "ST_SLEM_AMT" in filtered.columns:
+        filtered = filtered.copy()
+        filtered["ST_CPM_AMT"] = pd.to_numeric(filtered["ST_CPM_AMT"], errors="coerce").fillna(0)
+        filtered["ST_SLEM_AMT"] = pd.to_numeric(filtered["ST_SLEM_AMT"], errors="coerce").fillna(0)
+        _margin = (filtered["ST_SLEM_AMT"] - filtered["ST_CPM_AMT"]).clip(lower=0)
+        filtered["MD_재고비용"] = (filtered["INITIAL_ORD_QTY"] - filtered["OUTFLOW_7D"]).clip(lower=0) * filtered["ST_CPM_AMT"]
+        filtered["ML_재고비용"] = (filtered["ML_PRED_QTY"] - filtered["OUTFLOW_7D"]).clip(lower=0) * filtered["ST_CPM_AMT"]
+        filtered["MD_결품비용"] = (filtered["OUTFLOW_7D"] - filtered["INITIAL_ORD_QTY"]).clip(lower=0) * _margin
+        filtered["ML_결품비용"] = (filtered["OUTFLOW_7D"] - filtered["ML_PRED_QTY"]).clip(lower=0) * _margin
+        _has_cost = True
+    else:
+        _has_cost = False
+
+    # 수량 비교 차트 (센터별)
+    if selected_items and len(selected_items) <= 3:
+        for item_label in selected_items:
+            item_data = filtered[filtered["ITEM_LABEL"] == item_label].copy()
+            if item_data.empty:
+                continue
+            chart_df = item_data.rename(columns={
+                "INITIAL_ORD_QTY": "MD 실제발주",
+                "OUTFLOW_7D": "순 출고량",
+                "ML_PRED_QTY": "ML 예측",
+            }).melt(
+                id_vars="CENTER_NM",
+                value_vars=["MD 실제발주", "순 출고량", "ML 예측"],
+                var_name="구분", value_name="수량",
+            )
+            fig = px.bar(
+                chart_df, x="CENTER_NM", y="수량", color="구분", barmode="group",
+                labels={"CENTER_NM": "센터"},
+                title=f"{item_label} — 센터별 발주량 비교",
+                color_discrete_map={"MD 실제발주": "#E15759", "순 출고량": "#59A14F", "ML 예측": "#4E79A7"},
+                height=380,
+            )
+            style_figure(fig)
+            st.plotly_chart(fig, use_container_width=True, config={})
+
+            if _has_cost:
+                _md_cost = item_data["MD_재고비용"].sum() + item_data["MD_결품비용"].sum()
+                _ml_cost = item_data["ML_재고비용"].sum() + item_data["ML_결품비용"].sum()
+                _c1, _c2, _c3 = st.columns(3)
+                _c1.metric("MD 총비용", format_won(_md_cost))
+                _c2.metric("ML 총비용", format_won(_ml_cost))
+                _c3.metric("절감액", format_won(_md_cost - _ml_cost))
+
+    # 전체 요약 테이블
+    st.markdown("##### 상세 데이터")
+    display_cols = ["CENTER_NM", "ITEM_LABEL", "INITIAL_ORD_QTY", "OUTFLOW_7D", "ML_PRED_QTY"]
+    col_rename = {
+        "CENTER_NM": "센터",
+        "ITEM_LABEL": "상품",
+        "INITIAL_ORD_QTY": "MD 실제발주",
+        "OUTFLOW_7D": "순 출고량",
+        "ML_PRED_QTY": "ML 예측",
+    }
+    if _has_cost:
+        display_cols += ["MD_재고비용", "ML_재고비용", "MD_결품비용", "ML_결품비용"]
+        col_rename.update({
+            "MD_재고비용": "MD 재고비용",
+            "ML_재고비용": "ML 재고비용",
+            "MD_결품비용": "MD 결품비용",
+            "ML_결품비용": "ML 결품비용",
+        })
+    _disp = filtered[[c for c in display_cols if c in filtered.columns]].rename(columns=col_rename)
+    st.dataframe(_disp, use_container_width=True, height=400, hide_index=True)
+
+
+# ── ML vs MD 예측 비교 하위 탭 ────────────────────────────────────────────
+def _render_ml_vs_md_tab(
+    predictions_df: pd.DataFrame,
+    preorder_df: pd.DataFrame,
+) -> None:
+    """기존 render_prediction_vs_actual_page 내용 전체 (시계열 비용 탭 제외)."""
+    st.markdown("## ML 예측 vs MD 실제 비교")
+    st.caption(
+        "LightGBM 앙상블(Q97 + CQR + W94) 예측치와 MD 실제 초도발주량을 비교합니다. "
+        "정답(INITIAL_ORD_QTY)이 존재하는 train/val 데이터 기준으로 성능 지표를 산출합니다."
+    )
+
+    required_cols = {"ITEM_CODE", "CENTER_CODE", "ML_PRED_QTY", "INITIAL_ORD_QTY", "FORMULA_QTY", "SPLIT"}
+    if predictions_df.empty or not required_cols.issubset(predictions_df.columns):
+        st.info("predictions.parquet 에 필요한 컬럼이 없습니다. (ML_PRED_QTY, INITIAL_ORD_QTY, FORMULA_QTY, SPLIT)")
+        return
+
+    # 메타 조인 (상품명, 중분류, 센터명)
+    item_meta = (
+        preorder_df[["ITEM_CODE", "ITEM_NM", "ITEM_MDDV_NM", "ITEM_SMDV_NM"]]
+        .drop_duplicates("ITEM_CODE")
+    )
+    center_meta = (
+        preorder_df[["CENTER_CODE", "CENTER_NM"]]
+        .drop_duplicates("CENTER_CODE")
+    )
+    df = (
+        predictions_df.copy()
+        .merge(item_meta, on="ITEM_CODE", how="left")
+        .merge(center_meta, on="CENTER_CODE", how="left")
+    )
+    df["CENTER_NM"] = df["CENTER_NM"].fillna(df["CENTER_CODE"])
+    df["ITEM_LABEL"] = df["ITEM_CODE"].astype(str) + " | " + df["ITEM_NM"].fillna("?")
+
+    for col in ["ML_PRED_QTY", "INITIAL_ORD_QTY", "FORMULA_QTY"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+
+    # 사이드바 필터
+    with st.sidebar:
+        st.header("ML vs MD 비교 조건")
+        split_options = sorted(df["SPLIT"].dropna().unique().tolist())
+        selected_splits = st.multiselect(
+            "데이터 분할",
+            options=split_options,
+            default=[s for s in ["train", "val"] if s in split_options],
+            help="정답(INITIAL_ORD_QTY)이 있는 train/val 기준이 권장됩니다.",
+            key="pva_splits",
+        )
+        center_opts = sorted(df["CENTER_NM"].dropna().unique().tolist())
+        selected_centers_pva = st.multiselect(
+            "센터",
+            options=center_opts,
+            default=[],
+            help="비워두면 전체 센터",
+            key="pva_centers",
+        )
+        mddv_opts = sorted(df["ITEM_MDDV_NM"].dropna().unique().tolist())
+        selected_mddv_pva = st.multiselect(
+            "중분류",
+            options=mddv_opts,
+            default=[],
+            help="비워두면 전체 중분류",
+            key="pva_mddv",
+        )
+
+    filtered = df.copy()
+    if selected_splits:
+        filtered = filtered[filtered["SPLIT"].isin(selected_splits)]
+    if selected_centers_pva:
+        filtered = filtered[filtered["CENTER_NM"].isin(selected_centers_pva)]
+    if selected_mddv_pva:
+        filtered = filtered[filtered["ITEM_MDDV_NM"].isin(selected_mddv_pva)]
+
+    if filtered.empty:
+        st.info("선택한 조건에 맞는 데이터가 없습니다.")
+        return
+
+    # 오차 컬럼
+    filtered = filtered.copy()
+    filtered["ML_ERR"] = filtered["ML_PRED_QTY"] - filtered["INITIAL_ORD_QTY"]
+    filtered["FORMULA_ERR"] = filtered["FORMULA_QTY"] - filtered["INITIAL_ORD_QTY"]
+    nonzero = filtered[filtered["INITIAL_ORD_QTY"] > 0]
+
+    def _mape(err, actual):
+        return float((err.abs() / actual.clip(lower=1)).mean() * 100)
+
+    def _bias_pct(err, actual):
+        return float((err / actual.clip(lower=1)).mean() * 100)
+
+    ml_mape = _mape(nonzero["ML_ERR"], nonzero["INITIAL_ORD_QTY"]) if not nonzero.empty else 0.0
+    fm_mape = _mape(nonzero["FORMULA_ERR"], nonzero["INITIAL_ORD_QTY"]) if not nonzero.empty else 0.0
+    ml_bias = _bias_pct(nonzero["ML_ERR"], nonzero["INITIAL_ORD_QTY"]) if not nonzero.empty else 0.0
+    fm_bias = _bias_pct(nonzero["FORMULA_ERR"], nonzero["INITIAL_ORD_QTY"]) if not nonzero.empty else 0.0
+    over_rate_ml = float((filtered["ML_ERR"] > 0).mean() * 100)
+    over_rate_fm = float((filtered["FORMULA_ERR"] > 0).mean() * 100)
+
+    ml_total = int(filtered["ML_PRED_QTY"].sum())
+    fm_total = int(filtered["FORMULA_QTY"].sum())
+    md_total = int(filtered["INITIAL_ORD_QTY"].sum())
+
+    # ─── KPI ───────────────────────────────────────────────────────────────
+    st.markdown("### 전체 수량 합계")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("MD 실제 발주 합계", format_int(md_total))
+    c2.metric(
+        "ML 예측 합계",
+        format_int(ml_total),
+        delta=f"MD 대비 {ml_total - md_total:+,}",
+        delta_color="off",
+    )
+    c3.metric(
+        "현행 공식 합계",
+        format_int(fm_total),
+        delta=f"MD 대비 {fm_total - md_total:+,}",
+        delta_color="off",
+    )
+
+    st.markdown("### 예측 성능 지표")
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("ML MAPE", f"{ml_mape:.1f}%", delta=f"공식 {fm_mape:.1f}%", delta_color="off")
+    m2.metric(
+        "ML 편향(Bias)",
+        f"{ml_bias:+.1f}%",
+        help="양수 = 과발주 경향, 음수 = 부족발주 경향",
+    )
+    m3.metric("ML 과발주 비율", f"{over_rate_ml:.1f}%", delta=f"공식 {over_rate_fm:.1f}%", delta_color="off")
+    m4.metric("분석 행수", f"{len(filtered):,}")
+
+    st.divider()
+
+    tab0, tab1, tab2, tab3 = st.tabs(["산점도", "센터별 비교", "상품별 상세", "상세 데이터"])
+
+    # ─── TAB 0: 산점도 ────────────────────────────────────────────────────
+    with tab0:
+        st.markdown("#### ML 예측 vs MD 실제 산점도")
+        st.caption("y = x 선에 가까울수록 예측이 정확합니다. 위쪽은 과발주, 아래쪽은 부족발주.")
+
+        col_scatter, col_hist = st.columns([3, 2])
+
+        with col_scatter:
+            scatter_df = filtered[["CENTER_NM", "ITEM_LABEL", "ML_PRED_QTY", "INITIAL_ORD_QTY", "FORMULA_QTY", "ML_ERR"]].copy()
+            scatter_df["ML_ERR_PCT"] = (scatter_df["ML_ERR"] / scatter_df["INITIAL_ORD_QTY"].clip(lower=1) * 100).round(1)
+            fig_sc = px.scatter(
+                scatter_df,
+                x="INITIAL_ORD_QTY",
+                y="ML_PRED_QTY",
+                color="CENTER_NM",
+                hover_data={"ITEM_LABEL": True, "ML_ERR": True, "ML_ERR_PCT": True, "CENTER_NM": False},
+                labels={"INITIAL_ORD_QTY": "MD 실제 발주량", "ML_PRED_QTY": "ML 예측량"},
+                title="ML 예측 vs MD 실제",
+            )
+            max_val = max(scatter_df[["ML_PRED_QTY", "INITIAL_ORD_QTY"]].max()) * 1.05
+            fig_sc.add_shape(
+                type="line", x0=0, y0=0, x1=max_val, y1=max_val,
+                line=dict(color="gray", dash="dash", width=1),
+            )
+            style_figure(fig_sc)
+            fig_sc.update_layout(height=450)
+            st.plotly_chart(fig_sc, use_container_width=True, config={})
+
+        with col_hist:
+            st.markdown("##### 오차 분포 (ML - MD 실제)")
+            fig_hist = px.histogram(
+                filtered,
+                x="ML_ERR",
+                nbins=40,
+                color_discrete_sequence=["#0f7a4b"],
+                labels={"ML_ERR": "ML - MD 실제 (EA)"},
+            )
+            fig_hist.add_vline(x=0, line_color="red", line_dash="dash", line_width=1)
+            style_figure(fig_hist)
+            fig_hist.update_layout(height=220, showlegend=False, margin=dict(t=20, b=40))
+            st.plotly_chart(fig_hist, use_container_width=True, config={})
+
+            st.markdown("##### 공식 오차 분포 (공식 - MD 실제)")
+            fig_hist2 = px.histogram(
+                filtered,
+                x="FORMULA_ERR",
+                nbins=40,
+                color_discrete_sequence=["#f28e2b"],
+                labels={"FORMULA_ERR": "공식 - MD 실제 (EA)"},
+            )
+            fig_hist2.add_vline(x=0, line_color="red", line_dash="dash", line_width=1)
+            style_figure(fig_hist2)
+            fig_hist2.update_layout(height=200, showlegend=False, margin=dict(t=5, b=40))
+            st.plotly_chart(fig_hist2, use_container_width=True, config={})
+
+    # ─── TAB 1: 센터별 비교 ───────────────────────────────────────────────
+    with tab1:
+        st.markdown("#### 센터별 수량 합계 비교")
+        center_agg = (
+            filtered.groupby("CENTER_NM", as_index=False)[["ML_PRED_QTY", "FORMULA_QTY", "INITIAL_ORD_QTY"]]
+            .sum()
+            .sort_values("INITIAL_ORD_QTY", ascending=False)
+        )
+        center_agg = center_agg.rename(columns={
+            "ML_PRED_QTY": "ML 예측",
+            "FORMULA_QTY": "현행 공식",
+            "INITIAL_ORD_QTY": "MD 실제",
+        })
+        chart_df = center_agg.melt(id_vars="CENTER_NM", var_name="구분", value_name="수량")
+        fig_bar = px.bar(
+            chart_df,
+            x="CENTER_NM", y="수량", color="구분", barmode="group",
+            labels={"CENTER_NM": "센터", "수량": "수량"},
+            title="센터별 ML 예측 / 현행 공식 / MD 실제 합계",
+            color_discrete_map={"ML 예측": "#0f7a4b", "현행 공식": "#f28e2b", "MD 실제": "#4e79a7"},
+        )
+        style_figure(fig_bar)
+        fig_bar.update_layout(height=400)
+        st.plotly_chart(fig_bar, use_container_width=True, config={})
+
+        st.markdown("#### 센터별 ML 오차 (편향)")
+        center_err = (
+            filtered.groupby("CENTER_NM", as_index=False)
+            .apply(lambda g: pd.Series({
+                "ML 평균오차": g["ML_ERR"].mean(),
+                "공식 평균오차": g["FORMULA_ERR"].mean(),
+                "ML MAPE": _mape(g["ML_ERR"], g["INITIAL_ORD_QTY"]) if (g["INITIAL_ORD_QTY"] > 0).any() else 0.0,
+                "공식 MAPE": _mape(g["FORMULA_ERR"], g["INITIAL_ORD_QTY"]) if (g["INITIAL_ORD_QTY"] > 0).any() else 0.0,
+                "과발주 비율(ML)": f"{(g['ML_ERR'] > 0).mean() * 100:.1f}%",
+            }), include_groups=False)
+        ).reset_index(drop=True)
+        center_err["ML 평균오차"] = center_err["ML 평균오차"].round(0).astype(int)
+        center_err["공식 평균오차"] = center_err["공식 평균오차"].round(0).astype(int)
+        center_err["ML MAPE"] = center_err["ML MAPE"].map(lambda x: f"{x:.1f}%")
+        center_err["공식 MAPE"] = center_err["공식 MAPE"].map(lambda x: f"{x:.1f}%")
+        center_err = center_err.sort_values("CENTER_NM")
+
+        st.dataframe(
+            center_err[["CENTER_NM", "ML 평균오차", "공식 평균오차", "ML MAPE", "공식 MAPE", "과발주 비율(ML)"]],
+            width=900,
+            hide_index=True,
+            column_config={
+                "CENTER_NM": st.column_config.TextColumn("센터"),
+                "ML 평균오차": st.column_config.NumberColumn("ML 평균오차 (EA)", format="%d"),
+                "공식 평균오차": st.column_config.NumberColumn("공식 평균오차 (EA)", format="%d"),
+            },
+        )
+
+    # ─── TAB 2: 상품별 상세 ───────────────────────────────────────────────
+    with tab2:
+        st.markdown("#### 상품별 센터 발주량 비교")
+        item_options = sorted(filtered["ITEM_LABEL"].dropna().unique().tolist())
+        if not item_options:
+            st.info("상품 데이터가 없습니다.")
+        else:
+            selected_item_label = st.selectbox("상품 선택", item_options, key="pva_item_select")
+            item_df = filtered[filtered["ITEM_LABEL"] == selected_item_label].copy()
+
+            i1, i2, i3, i4 = st.columns(4)
+            i1.metric("MD 실제 합계", format_int(int(item_df["INITIAL_ORD_QTY"].sum())))
+            i2.metric(
+                "ML 예측 합계",
+                format_int(int(item_df["ML_PRED_QTY"].sum())),
+                delta=f"{int(item_df['ML_PRED_QTY'].sum()) - int(item_df['INITIAL_ORD_QTY'].sum()):+,}",
+                delta_color="off",
+            )
+            i3.metric(
+                "현행 공식 합계",
+                format_int(int(item_df["FORMULA_QTY"].sum())),
+                delta=f"{int(item_df['FORMULA_QTY'].sum()) - int(item_df['INITIAL_ORD_QTY'].sum()):+,}",
+                delta_color="off",
+            )
+            item_mape = _mape(item_df["ML_ERR"], item_df["INITIAL_ORD_QTY"]) if (item_df["INITIAL_ORD_QTY"] > 0).any() else 0.0
+            i4.metric("ML MAPE", f"{item_mape:.1f}%")
+
+            item_chart = item_df.rename(columns={
+                "ML_PRED_QTY": "ML 예측",
+                "FORMULA_QTY": "현행 공식",
+                "INITIAL_ORD_QTY": "MD 실제",
+            }).melt(
+                id_vars="CENTER_NM",
+                value_vars=["ML 예측", "현행 공식", "MD 실제"],
+                var_name="구분", value_name="수량",
+            )
+            fig_item = px.bar(
+                item_chart,
+                x="CENTER_NM", y="수량", color="구분", barmode="group",
+                labels={"CENTER_NM": "센터"},
+                title=f"{selected_item_label} — 센터별 발주량 비교",
+                color_discrete_map={"ML 예측": "#0f7a4b", "현행 공식": "#f28e2b", "MD 실제": "#4e79a7"},
+            )
+            style_figure(fig_item)
+            fig_item.update_layout(height=380)
+            st.plotly_chart(fig_item, use_container_width=True, config={})
+
+            display_cols = ["CENTER_NM", "INITIAL_ORD_QTY", "ML_PRED_QTY", "FORMULA_QTY", "ML_ERR", "FORMULA_ERR"]
+            st.dataframe(
+                item_df[display_cols].rename(columns={
+                    "CENTER_NM": "센터",
+                    "INITIAL_ORD_QTY": "MD 실제",
+                    "ML_PRED_QTY": "ML 예측",
+                    "FORMULA_QTY": "현행 공식",
+                    "ML_ERR": "ML - MD",
+                    "FORMULA_ERR": "공식 - MD",
+                }).sort_values("MD 실제", ascending=False),
+                hide_index=True,
+                column_config={
+                    "MD 실제": st.column_config.NumberColumn(format="%d"),
+                    "ML 예측": st.column_config.NumberColumn(format="%d"),
+                    "현행 공식": st.column_config.NumberColumn(format="%d"),
+                    "ML - MD": st.column_config.NumberColumn(format="%d"),
+                    "공식 - MD": st.column_config.NumberColumn(format="%d"),
+                },
+            )
+
+    # ─── TAB 3: 상세 데이터 ───────────────────────────────────────────────
+    with tab3:
+        export_df = filtered[[
+            "SPLIT", "CENTER_NM", "ITEM_CODE", "ITEM_NM", "ITEM_MDDV_NM",
+            "INITIAL_ORD_QTY", "ML_PRED_QTY", "FORMULA_QTY", "ML_ERR", "FORMULA_ERR",
+        ]].rename(columns={
+            "SPLIT": "분할",
+            "CENTER_NM": "센터",
+            "ITEM_CODE": "상품코드",
+            "ITEM_NM": "상품명",
+            "ITEM_MDDV_NM": "중분류",
+            "INITIAL_ORD_QTY": "MD 실제",
+            "ML_PRED_QTY": "ML 예측",
+            "FORMULA_QTY": "현행 공식",
+            "ML_ERR": "ML - MD",
+            "FORMULA_ERR": "공식 - MD",
+        }).sort_values(["센터", "상품코드"])
+
+        st.dataframe(
+            export_df,
+            hide_index=True,
+            use_container_width=True,
+            column_config={
+                "MD 실제": st.column_config.NumberColumn(format="%d"),
+                "ML 예측": st.column_config.NumberColumn(format="%d"),
+                "현행 공식": st.column_config.NumberColumn(format="%d"),
+                "ML - MD": st.column_config.NumberColumn(format="%d"),
+                "공식 - MD": st.column_config.NumberColumn(format="%d"),
+            },
+        )
+
+
 def render_inventory_cost_page(
     stock_df: pd.DataFrame,
     sales_df: pd.DataFrame,
     center_order_df: pd.DataFrame,
     preorder_df: pd.DataFrame,
+    predictions_df: pd.DataFrame | None = None,
+    cost_ts: pd.DataFrame | None = None,
 ) -> None:
     st.markdown("## 재고비용 시뮬레이션")
+    st.caption("신상품 초도 발주 비용 비교, ML 예측 성능 분석, 연간 재고비용 시뮬레이션을 통합 제공합니다.")
+
+    if predictions_df is None:
+        predictions_df = pd.DataFrame()
+    if cost_ts is None:
+        cost_ts = pd.DataFrame()
+
+    # ─ 사이드바: 공통 분석 기간 필터 ──────────────────────────────────────
+    _ts_min = pd.Timestamp("2025-01-01")
+    _ts_max = pd.Timestamp("2025-12-31")
+    if not cost_ts.empty and "NP_RLSE_YMD" in cost_ts.columns:
+        _valid = cost_ts["NP_RLSE_YMD"].dropna()
+        if not _valid.empty:
+            _ts_min = _valid.min()
+            _ts_max = _valid.max()
+    elif not predictions_df.empty and "NP_RLSE_YMD" in predictions_df.columns:
+        _valid = pd.to_datetime(predictions_df["NP_RLSE_YMD"], errors="coerce").dropna()
+        if not _valid.empty:
+            _ts_min = _valid.min()
+            _ts_max = _valid.max()
+
+    with st.sidebar:
+        st.header("분석 기간")
+        if "cost_sim_date_range" not in st.session_state:
+            st.session_state["cost_sim_date_range"] = (_ts_min.date(), _ts_max.date())
+        _cost_date_range = st.date_input(
+            "초도 비용 분석 기간",
+            min_value=_ts_min.date(),
+            max_value=_ts_max.date(),
+            key="cost_sim_date_range",
+        )
+        if isinstance(_cost_date_range, tuple) and len(_cost_date_range) == 2:
+            _cost_start, _cost_end = _cost_date_range
+        else:
+            _cost_start, _cost_end = _ts_min.date(), _ts_max.date()
+        st.caption("초도 물량 비용 비교·ML 예측 비교에 적용됩니다.")
+        st.divider()
+
+    main_tab1, main_tab2, main_tab3 = st.tabs(["초도 물량 비용 비교", "ML vs MD 예측 비교", "연간 재고비용 시뮬레이션"])
+
+    with main_tab1:
+        _render_initial_order_cost_tab(cost_ts, predictions_df, preorder_df, _cost_start, _cost_end)
+
+    with main_tab2:
+        _render_ml_vs_md_tab(predictions_df, preorder_df)
+
+    with main_tab3:
+        _render_annual_inventory_cost_tab(stock_df, sales_df, center_order_df, preorder_df)
+
+
+def _render_annual_inventory_cost_tab(
+    stock_df: pd.DataFrame,
+    sales_df: pd.DataFrame,
+    center_order_df: pd.DataFrame,
+    preorder_df: pd.DataFrame,
+) -> None:
+    """기존 연간 재고비용 시뮬레이션 (보관비/하역비/자본비용 슬라이더)."""
+    st.markdown("#### 연간 재고비용 시뮬레이션")
     st.caption("보관비, 입출고 하역비, 자본비용 가정을 움직이면서 센터/상품별 재고비용 변화를 확인합니다.")
 
     if stock_df.empty:
@@ -2513,8 +3312,8 @@ def render_inventory_cost_page(
                 height=460,
                 hide_index=True,
                 column_config={
-                    "원가(EA)": st.column_config.NumberColumn("원가(EA)", format="%,.0f"),
-                    "매가(EA)": st.column_config.NumberColumn("매가(EA)", format="%,.0f"),
+                    "원가(EA)": st.column_config.NumberColumn("원가(EA)", format="%d"),
+                    "매가(EA)": st.column_config.NumberColumn("매가(EA)", format="%d"),
                     "파렛트당EA": st.column_config.NumberColumn("파렛트당EA", format="%.0f"),
                     "외박스당EA": st.column_config.NumberColumn("외박스당EA", format="%.0f"),
                     "보관비/EA/일(원)": st.column_config.NumberColumn("보관비/EA/일", format="%.2f"),
@@ -3290,10 +4089,10 @@ def render_past_simple_lookup(
         use_container_width=True,
         height=360,
         column_config={
-            "초도발주량": st.column_config.NumberColumn(format="%,.0f"),
-            "초기예약발주": st.column_config.NumberColumn(format="%,.0f"),
-            "실출고량(7일치)": st.column_config.NumberColumn(format="%,.0f"),
-            "실수요": st.column_config.NumberColumn(format="%,.0f"),
+            "초도발주량": st.column_config.NumberColumn(format="%d"),
+            "초기예약발주": st.column_config.NumberColumn(format="%d"),
+            "실출고량(7일치)": st.column_config.NumberColumn(format="%d"),
+            "실수요": st.column_config.NumberColumn(format="%d"),
             "실출고율(7일치)(%)": st.column_config.NumberColumn(format="%.1f"),
         },
     )
@@ -3419,14 +4218,14 @@ def render_past_simple_lookup(
                 use_container_width=True,
                 height=300,
                 column_config={
-                    "초도발주량": st.column_config.NumberColumn(format="%,.0f"),
-                    "4일치 예약주문": st.column_config.NumberColumn(format="%,.0f"),
-                    "10일치 예약주문": st.column_config.NumberColumn(format="%,.0f"),
-                    "실출고량": st.column_config.NumberColumn("실출고량(7일치)", format="%,.0f"),
-                    "실수요": st.column_config.NumberColumn(format="%,.0f"),
+                    "초도발주량": st.column_config.NumberColumn(format="%d"),
+                    "4일치 예약주문": st.column_config.NumberColumn(format="%d"),
+                    "10일치 예약주문": st.column_config.NumberColumn(format="%d"),
+                    "실출고량": st.column_config.NumberColumn("실출고량(7일치)", format="%d"),
+                    "실수요": st.column_config.NumberColumn(format="%d"),
                     "출고율(7일치)(%)": st.column_config.NumberColumn(format="%.1f"),
-                    "참여점포": st.column_config.NumberColumn(format="%,.0f"),
-                    "전체점포": st.column_config.NumberColumn(format="%,.0f"),
+                    "참여점포": st.column_config.NumberColumn(format="%d"),
+                    "전체점포": st.column_config.NumberColumn(format="%d"),
                 },
             )
 
@@ -3488,10 +4287,10 @@ def render_past_simple_lookup(
             use_container_width=True,
             height=420,
             column_config={
-                "초도발주량": st.column_config.NumberColumn(format="%,.0f"),
-                "초기예약발주": st.column_config.NumberColumn(format="%,.0f"),
-                "실출고량(7일치)": st.column_config.NumberColumn(format="%,.0f"),
-                "실수요": st.column_config.NumberColumn(format="%,.0f"),
+                "초도발주량": st.column_config.NumberColumn(format="%d"),
+                "초기예약발주": st.column_config.NumberColumn(format="%d"),
+                "실출고량(7일치)": st.column_config.NumberColumn(format="%d"),
+                "실수요": st.column_config.NumberColumn(format="%d"),
                 "실출고율(7일치)(%)": st.column_config.NumberColumn(format="%.1f"),
             },
         )
@@ -3522,10 +4321,10 @@ def render_past_simple_lookup(
             use_container_width=True,
             height=390,
             column_config={
-                "총 초도발주량": st.column_config.NumberColumn(format="%,.0f"),
-                "총 초기예약발주": st.column_config.NumberColumn(format="%,.0f"),
-                "총 실출고량(7일치)": st.column_config.NumberColumn(format="%,.0f"),
-                "총 실수요": st.column_config.NumberColumn(format="%,.0f"),
+                "총 초도발주량": st.column_config.NumberColumn(format="%d"),
+                "총 초기예약발주": st.column_config.NumberColumn(format="%d"),
+                "총 실출고량(7일치)": st.column_config.NumberColumn(format="%d"),
+                "총 실수요": st.column_config.NumberColumn(format="%d"),
                 "평균 출고율(7일치)(%)": st.column_config.NumberColumn(format="%.1f"),
             },
         )
@@ -3750,11 +4549,11 @@ def render_past_category_compare(preorder_df: pd.DataFrame, sales_df: pd.DataFra
         height=360,
         hide_index=True,
         column_config={
-            "상품수": st.column_config.NumberColumn(format="%,.0f"),
-            "예약주문량": st.column_config.NumberColumn(format="%,.0f"),
-            "초도발주량": st.column_config.NumberColumn(format="%,.0f"),
-            "실수요량": st.column_config.NumberColumn(format="%,.0f"),
-            "과발주 갭": st.column_config.NumberColumn(format="%,.0f"),
+            "상품수": st.column_config.NumberColumn(format="%d"),
+            "예약주문량": st.column_config.NumberColumn(format="%d"),
+            "초도발주량": st.column_config.NumberColumn(format="%d"),
+            "실수요량": st.column_config.NumberColumn(format="%d"),
+            "과발주 갭": st.column_config.NumberColumn(format="%d"),
         },
     )
 
@@ -4277,6 +5076,21 @@ if selected_page == "MD 발주 시뮬레이션":
     st.stop()
 
 if selected_page == "재고비용 시뮬레이션":
+    with st.sidebar:
+        st.header("파일 연결 상태")
+        _cost_ts_loaded = load_cost_timeseries()
+        status_items = [
+            ("예약주문 Raw", not full_preorder_df.empty),
+            ("ML 예측 (predictions.parquet)", not full_predictions_df.empty),
+            ("비용 시계열 (cost_comparison_timeseries.csv)", not _cost_ts_loaded.empty),
+            ("센터 재고 Raw", STOCK_PATH.exists()),
+        ]
+        for label, connected in status_items:
+            if connected:
+                st.info(f"{label}: 연결됨")
+            else:
+                st.warning(f"{label}: 없음")
+
     _np_item_codes = frozenset(full_preorder_df["ITEM_CODE"].astype(str).unique())
     with st.spinner("재고 데이터 로딩 중... (최초 1회만 수행됩니다)"):
         cost_stock_df = load_stock(_np_item_codes)
@@ -4285,6 +5099,8 @@ if selected_page == "재고비용 시뮬레이션":
         full_sales_df,
         full_center_order_df,
         full_preorder_df,
+        predictions_df=full_predictions_df,
+        cost_ts=_cost_ts_loaded,
     )
     st.stop()
 
@@ -4445,10 +5261,10 @@ if st.session_state["weekly_view_mode"] == "list":
         selection_mode="single-row",
         column_config={
             "출시일": st.column_config.DateColumn("출시일"),
-            "판매가": st.column_config.NumberColumn("판매가", format="%,.0f"),
-            "최소주문": st.column_config.NumberColumn("최소주문", format="%,.0f"),
-            "예약수량": st.column_config.NumberColumn("예약수량", format="%,.0f"),
-            "예약점포수": st.column_config.NumberColumn("예약점포수", format="%,.0f"),
+            "판매가": st.column_config.NumberColumn("판매가", format="%d"),
+            "최소주문": st.column_config.NumberColumn("최소주문", format="%d"),
+            "예약수량": st.column_config.NumberColumn("예약수량", format="%d"),
+            "예약점포수": st.column_config.NumberColumn("예약점포수", format="%d"),
             "예약/초도 비율(%)": st.column_config.NumberColumn("예약/초도 비율(%)", format="%.1f"),
         },
     )
@@ -4707,15 +5523,15 @@ else:
         column_config={
             "LDU": st.column_config.TextColumn("LDU"),
             "CENTER_CODE": st.column_config.TextColumn("센터코드"),
-            "INITIAL_ORD_QTY": st.column_config.NumberColumn("초도 발주량", format="%,.0f"),
-            "RESERVATION_QTY": st.column_config.NumberColumn("예약 수량", format="%,.0f"),
+            "INITIAL_ORD_QTY": st.column_config.NumberColumn("초도 발주량", format="%d"),
+            "RESERVATION_QTY": st.column_config.NumberColumn("예약 수량", format="%d"),
             "센터 가중치": st.column_config.NumberColumn("센터 가중치", format="%.2f"),
-            "기준 점포수": st.column_config.NumberColumn("점포수", format="%,.0f"),
-            "산식 초도예측량": st.column_config.NumberColumn("산식 초도예측량", format="%,.0f"),
-            "초도 차이": st.column_config.NumberColumn("현재 초도-산식 차이", format="%,.0f"),
+            "기준 점포수": st.column_config.NumberColumn("점포수", format="%d"),
+            "산식 초도예측량": st.column_config.NumberColumn("산식 초도예측량", format="%d"),
+            "초도 차이": st.column_config.NumberColumn("현재 초도-산식 차이", format="%d"),
             "예약 충족 배수": st.column_config.NumberColumn("초도/예약 배수", format="%.2f"),
-            "ORDERING_STORE_CNT": st.column_config.NumberColumn("예약 점포 수", format="%,.0f"),
-            "TOTAL_STORE_CNT": st.column_config.NumberColumn("전체 점포 수", format="%,.0f"),
+            "ORDERING_STORE_CNT": st.column_config.NumberColumn("예약 점포 수", format="%d"),
+            "TOTAL_STORE_CNT": st.column_config.NumberColumn("전체 점포 수", format="%d"),
             "예약/초도 비율(%)": st.column_config.NumberColumn("예약/초도 비율(%)", format="%.1f"),
             "예약 참여율(%)": st.column_config.NumberColumn("예약 참여율(%)", format="%.1f"),
         },
